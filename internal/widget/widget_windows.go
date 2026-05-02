@@ -23,9 +23,11 @@ var (
 	gdi32              = syscall.NewLazyDLL("gdi32.dll")
 	user32             = syscall.NewLazyDLL("user32.dll")
 	procCreateBrush    = gdi32.NewProc("CreateSolidBrush")
+	procCreatePen      = gdi32.NewProc("CreatePen")
 	procRoundRectRgn   = gdi32.NewProc("CreateRoundRectRgn")
 	procSetWindowRgn   = user32.NewProc("SetWindowRgn")
 	procSetLayeredAttr = user32.NewProc("SetLayeredWindowAttributes")
+	procSetWindowComp  = user32.NewProc("SetWindowCompositionAttribute")
 )
 
 var overlay = &state{
@@ -68,6 +70,7 @@ func ShowIdle() {
 	hwnd := overlay.hwnd
 	overlay.mu.Unlock()
 	resize(hwnd, compactWidth, compactHeight, false)
+	moveNearCursor(hwnd)
 	win.ShowWindow(hwnd, win.SW_SHOWNOACTIVATE)
 	redraw(hwnd)
 }
@@ -85,6 +88,7 @@ func Show(status string) {
 	hwnd := overlay.hwnd
 	overlay.mu.Unlock()
 	resize(hwnd, wideWidth, wideHeight, true)
+	moveNearCursor(hwnd)
 	win.ShowWindow(hwnd, win.SW_SHOWNOACTIVATE)
 	redraw(hwnd)
 }
@@ -98,6 +102,50 @@ func Hide() {
 	hwnd := overlay.hwnd
 	overlay.mu.Unlock()
 	win.ShowWindow(hwnd, win.SW_HIDE)
+}
+
+// moveNearCursor positions the overlay just below the mouse cursor,
+// keeping it within the virtual screen bounds (all monitors).
+func moveNearCursor(hwnd win.HWND) {
+	if hwnd == 0 {
+		return
+	}
+	var pt win.POINT
+	if !win.GetCursorPos(&pt) {
+		return
+	}
+
+	// Virtual screen bounds (covers all monitors)
+	vx := int32(win.GetSystemMetrics(win.SM_XVIRTUALSCREEN))
+	vy := int32(win.GetSystemMetrics(win.SM_YVIRTUALSCREEN))
+	vw := int32(win.GetSystemMetrics(win.SM_CXVIRTUALSCREEN))
+	vh := int32(win.GetSystemMetrics(win.SM_CYVIRTUALSCREEN))
+
+	// Offset slightly so it doesn't cover the cursor itself
+	x := pt.X + 16
+	y := pt.Y + 16
+
+	// Clamp to virtual screen
+	var rect win.RECT
+	win.GetWindowRect(hwnd, &rect)
+	w := rect.Right - rect.Left
+	h := rect.Bottom - rect.Top
+
+	if x+w > vx+vw {
+		x = vx + vw - w - 4
+	}
+	if y+h > vy+vh {
+		y = vy + vh - h - 4
+	}
+	if x < vx {
+		x = vx + 4
+	}
+	if y < vy {
+		y = vy + 4
+	}
+
+	win.SetWindowPos(hwnd, win.HWND_TOPMOST, x, y, 0, 0,
+		win.SWP_NOACTIVATE|win.SWP_NOSIZE|win.SWP_SHOWWINDOW)
 }
 
 func SetStatus(status string) {
@@ -141,7 +189,7 @@ func run() {
 		CbSize:        uint32(unsafe.Sizeof(win.WNDCLASSEX{})),
 		LpfnWndProc:   wndProc,
 		HInstance:     instance,
-		HbrBackground: win.HBRUSH(createBrush(rgb(43, 43, 43))),
+		HbrBackground: win.HBRUSH(createBrush(rgb(24, 24, 26))),
 		LpszClassName: className,
 	}
 	win.RegisterClassEx(&wc)
@@ -156,7 +204,7 @@ func run() {
 		x, y, compactWidth, compactHeight,
 		0, 0, instance, nil,
 	)
-	setLayeredAlpha(hwnd, 246)
+	setLayeredAlpha(hwnd, 235)
 	setRoundedRegion(hwnd)
 
 	overlay.mu.Lock()
@@ -206,11 +254,15 @@ func paint(hwnd win.HWND) {
 	hdc := win.BeginPaint(hwnd, &ps)
 	defer win.EndPaint(hwnd, &ps)
 
-	bg := createBrush(rgb(43, 43, 43))
+	bg := createBrush(rgb(24, 24, 26))
 	oldBrush := win.SelectObject(hdc, win.HGDIOBJ(bg))
+	pen := createPen(rgb(24, 24, 26))
+	oldPen := win.SelectObject(hdc, win.HGDIOBJ(pen))
 	w := currentWidth()
 	h := currentHeight()
-	win.RoundRect(hdc, 0, 0, w, h, h, h)
+	win.RoundRect(hdc, 0, 0, w+1, h+1, h, h)
+	win.SelectObject(hdc, oldPen)
+	win.DeleteObject(win.HGDIOBJ(pen))
 	win.SelectObject(hdc, oldBrush)
 	win.DeleteObject(win.HGDIOBJ(bg))
 
@@ -225,13 +277,13 @@ func paint(hwnd win.HWND) {
 	overlay.mu.Unlock()
 
 	win.SetBkMode(hdc, win.TRANSPARENT)
-	win.SetTextColor(hdc, win.RGB(235, 235, 235))
+	win.SetTextColor(hdc, win.RGB(175, 175, 175))
 	if wide {
 		if status == "processing" {
 			drawProcessingWave(hdc, w, h, elapsed)
 		} else {
 			drawWaveform(hdc, levels, levelAt, w, h)
-			win.SetTextColor(hdc, win.RGB(220, 220, 220))
+			win.SetTextColor(hdc, win.RGB(165, 165, 165))
 			drawText(hdc, w-44, 14, formatElapsed(elapsed))
 		}
 	} else {
@@ -240,29 +292,33 @@ func paint(hwnd win.HWND) {
 }
 
 func drawWaveform(hdc win.HDC, levels []float64, levelAt int, w, h int32) {
-	white := createBrush(rgb(238, 238, 238))
-	oldBrush := win.SelectObject(hdc, win.HGDIOBJ(white))
+	wave := createBrush(rgb(232, 232, 232))
+	oldBrush := win.SelectObject(hdc, win.HGDIOBJ(wave))
 	defer func() {
 		win.SelectObject(hdc, oldBrush)
-		win.DeleteObject(win.HGDIOBJ(white))
+		win.DeleteObject(win.HGDIOBJ(wave))
 	}()
 
 	baseY := h / 2
-	left := int32(18)
-	right := int32(w - 62)
-	barCount := int32(len(levels))
+	left := int32(22)
+	right := int32(w - 66)
+	barCount := int32(52)
 	step := float64(right-left) / float64(barCount)
 	for i := int32(0); i < barCount; i++ {
-		idx := (levelAt + int(i)) % len(levels)
-		lvl := math.Max(0.025, math.Min(1, levels[idx]*7))
-		barH := int32(2 + lvl*28)
+		idx := (levelAt + int(i*int32(len(levels))/barCount)) % len(levels)
+		if levels[idx] < 0.008 {
+			continue
+		}
+		lvl := smoothLevel(levels, idx)
+		lvl = math.Max(0.08, math.Min(1, lvl*7))
+		barH := int32(4 + lvl*22)
 		x := left + int32(float64(i)*step)
-		win.Rectangle_(hdc, x, baseY-barH/2, x+2, baseY+barH/2)
+		drawRoundBar(hdc, x, baseY-barH/2, 3, barH)
 	}
 }
 
 func drawIdleGlyph(hdc win.HDC, h int32) {
-	white := createBrush(rgb(238, 238, 238))
+	white := createBrush(rgb(255, 255, 255))
 	oldBrush := win.SelectObject(hdc, win.HGDIOBJ(white))
 	defer func() {
 		win.SelectObject(hdc, oldBrush)
@@ -278,27 +334,41 @@ func drawIdleGlyph(hdc win.HDC, h int32) {
 }
 
 func drawProcessingWave(hdc win.HDC, w, h int32, elapsed time.Duration) {
-	white := createBrush(rgb(238, 238, 238))
-	oldBrush := win.SelectObject(hdc, win.HGDIOBJ(white))
+	wave := createBrush(rgb(232, 232, 232))
+	oldBrush := win.SelectObject(hdc, win.HGDIOBJ(wave))
 	defer func() {
 		win.SelectObject(hdc, oldBrush)
-		win.DeleteObject(win.HGDIOBJ(white))
+		win.DeleteObject(win.HGDIOBJ(wave))
 	}()
 
 	baseY := h / 2
-	left := int32(22)
-	right := int32(w - 22)
-	barCount := int32(56)
+	left := int32(26)
+	right := int32(w - 26)
+	barCount := int32(48)
 	step := float64(right-left) / float64(barCount)
-	phase := elapsed.Seconds() * 5.0
+	phase := elapsed.Seconds() * 4.2
 	for i := int32(0); i < barCount; i++ {
 		x := left + int32(float64(i)*step)
-		t := float64(i)*0.42 - phase
-		lvl := 0.22 + 0.78*(math.Sin(t)+1)/2
+		t := float64(i)*0.36 - phase
+		lvl := 0.18 + 0.82*(math.Sin(t)+1)/2
 		envelope := math.Sin(float64(i) / float64(barCount-1) * math.Pi)
-		barH := int32(4 + lvl*envelope*30)
-		win.Rectangle_(hdc, x, baseY-barH/2, x+2, baseY+barH/2)
+		barH := int32(4 + lvl*envelope*24)
+		drawRoundBar(hdc, x, baseY-barH/2, 3, barH)
 	}
+}
+
+func smoothLevel(levels []float64, idx int) float64 {
+	prev := levels[(idx-1+len(levels))%len(levels)]
+	curr := levels[idx]
+	next := levels[(idx+1)%len(levels)]
+	return prev*0.25 + curr*0.5 + next*0.25
+}
+
+func drawRoundBar(hdc win.HDC, x, y, w, h int32) {
+	if h < w {
+		h = w
+	}
+	win.RoundRect(hdc, x, y, x+w, y+h, w, w)
 }
 
 func drawText(hdc win.HDC, x, y int32, text string) {
@@ -381,9 +451,42 @@ func setLayeredAlpha(hwnd win.HWND, alpha byte) {
 	procSetLayeredAttr.Call(uintptr(hwnd), 0, uintptr(alpha), lwaAlpha)
 }
 
+func setBlurBehind(hwnd win.HWND) {
+	// Undocumented but stable Windows 10/11 API for acrylic/blur effect
+	type accentPolicy struct {
+		AccentState   uint32
+		AccentFlags   uint32
+		GradientColor uint32
+		AnimationId   uint32
+	}
+	type wndCompData struct {
+		Attrib uint32
+		PVData unsafe.Pointer
+		CbData uint32
+	}
+	const wcaAccentPolicy = 19
+	const accentEnableBlurBehind = 3
+	accent := accentPolicy{
+		AccentState:   accentEnableBlurBehind,
+		GradientColor: 0x80202020, // dark grey tint (AABBGGRR)
+	}
+	data := wndCompData{
+		Attrib: wcaAccentPolicy,
+		PVData: unsafe.Pointer(&accent),
+		CbData: uint32(unsafe.Sizeof(accent)),
+	}
+	procSetWindowComp.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&data)))
+}
+
 func createBrush(color uint32) win.HBRUSH {
 	ret, _, _ := procCreateBrush.Call(uintptr(color))
 	return win.HBRUSH(ret)
+}
+
+func createPen(color uint32) win.HPEN {
+	const psSolid = 0
+	ret, _, _ := procCreatePen.Call(psSolid, 1, uintptr(color))
+	return win.HPEN(ret)
 }
 
 func rgb(r, g, b byte) uint32 {
