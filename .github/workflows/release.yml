@@ -26,6 +26,7 @@ jobs:
         with:
           msystem: MINGW64
           update: true
+          path-type: inherit
           install: >-
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-pkg-config
@@ -34,17 +35,12 @@ jobs:
             mingw-w64-x86_64-libpng
 
       - name: Build
-        shell: pwsh
+        shell: msys2 {0}
+        env:
+          CGO_ENABLED: "1"
         run: |
-          # Strawberry Perl ships its own pkg-config that wins over MSYS2's.
-          # Strip it from PATH so the MSYS2 toolchain is used exclusively.
-          $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -notlike '*Strawberry*' }) -join ';'
-          $env:PATH             = "C:\msys64\mingw64\bin;$env:PATH"
-          $env:PKG_CONFIG_PATH  = "C:\msys64\mingw64\lib\pkgconfig"
-          $env:CGO_ENABLED      = "1"
-          $extld  = "-static -static-libgcc -static-libstdc++ -lwinmm -lole32 -lsetupapi -luuid -lpropsys"
-          $ldflags = "-H=windowsgui -s -w -extldflags `"$extld`""
-          go build -ldflags $ldflags -o wispwind.exe cmd/app/main.go
+          extld="-static -static-libgcc -static-libstdc++ -lwinmm -lole32 -lsetupapi -luuid -lpropsys"
+          go build -ldflags "-H=windowsgui -s -w -extldflags \"$extld\"" -o wispwind.exe cmd/app/main.go
 
       - name: Create release
         uses: softprops/action-gh-release@v2
