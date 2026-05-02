@@ -16,7 +16,7 @@ if (Test-Path $mingwBin) {
 
 $env:CGO_ENABLED = "1"
 
-$extldflags = "-static -lwinmm -lole32 -lsetupapi -luuid -lpropsys"
+$extldflags = "-static -static-libgcc -static-libstdc++ -lwinmm -lole32 -lsetupapi -luuid -lpropsys"
 $ldflags = "-s -w -extldflags `"$extldflags`""
 if ($Windowed) {
     $ldflags = "-H=windowsgui $ldflags"
