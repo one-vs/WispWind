@@ -42,6 +42,8 @@ func StartRecording(cb func([]int16)) error {
 	buffer = make([]int16, 0)
 	in := make([]int16, framesPerBuffer)
 
+	const inputGain = 3.0 // Developer-only: boost mic sensitivity
+
 	var err error
 	stream, err = portaudio.OpenDefaultStream(1, 0, float64(SampleRate), len(in), func(inBuf []int16) {
 		mu.Lock()
@@ -49,6 +51,17 @@ func StartRecording(cb func([]int16)) error {
 			mu.Unlock()
 			return
 		}
+
+		for i := range inBuf {
+			val := float32(inBuf[i]) * inputGain
+			if val > 32767 {
+				val = 32767
+			} else if val < -32768 {
+				val = -32768
+			}
+			inBuf[i] = int16(val)
+		}
+
 		buffer = append(buffer, inBuf...)
 		cb := onAudio
 		chunk := append([]int16(nil), inBuf...)

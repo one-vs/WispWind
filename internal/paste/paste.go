@@ -2,13 +2,66 @@ package paste
 
 import (
 	"strings"
+	"syscall"
 	"time"
 	"unicode"
 	"unicode/utf8"
+	"unsafe"
 
 	"github.com/atotto/clipboard"
-	"github.com/go-vgo/robotgo"
 )
+
+var (
+	user32dll         = syscall.NewLazyDLL("user32.dll")
+	procGetForeground = user32dll.NewProc("GetForegroundWindow")
+	procSendInput     = user32dll.NewProc("SendInput")
+)
+
+const (
+	inputKeyboard  = 1
+	keyEventfKeyUp = 0x0002
+	vkControl      = 0x11
+	vkV            = 0x56
+	vkC            = 0x43
+	vkLeft         = 0x25
+	vkRight        = 0x27
+	vkShift        = 0x10
+	vkBack         = 0x08
+)
+
+type keyboardInput struct {
+	Type    uint32
+	_       uint32 // padding for union alignment on 64-bit
+	WVk     uint16
+	WScan   uint16
+	DwFlags uint32
+	Time    uint32
+	DwExtra uintptr
+	_       [8]byte // padding so struct matches sizeof(INPUT) = 40 on x64
+}
+
+func sendKey(vk uint16, keyUp bool) {
+	var flags uint32
+	if keyUp {
+		flags = keyEventfKeyUp
+	}
+	in := keyboardInput{
+		Type:    inputKeyboard,
+		WVk:     vk,
+		DwFlags: flags,
+	}
+	procSendInput.Call(1, uintptr(unsafe.Pointer(&in)), unsafe.Sizeof(in))
+}
+
+func sendCombo(modifier, key uint16) {
+	sendKey(modifier, false)
+	time.Sleep(20 * time.Millisecond)
+	sendKey(key, false)
+	time.Sleep(20 * time.Millisecond)
+	sendKey(key, true)
+	time.Sleep(20 * time.Millisecond)
+	sendKey(modifier, true)
+}
 
 func Init() error {
 	return nil // atotto/clipboard doesn't require initialization
@@ -39,9 +92,7 @@ func HasSelection() bool {
 	clipboard.WriteAll("")
 	time.Sleep(40 * time.Millisecond)
 
-	robotgo.KeyToggle("control", "down")
-	robotgo.KeyTap("c")
-	robotgo.KeyToggle("control", "up")
+	sendCombo(vkControl, vkC)
 	time.Sleep(70 * time.Millisecond)
 
 	selected, _ := clipboard.ReadAll()
@@ -52,27 +103,15 @@ func PasteTextWithOptions(text string, smartSpacing bool) {
 	if text == "" {
 		return
 	}
-	robotgo.KeyToggle("control", "up")
+	sendKey(vkControl, true)
 	if smartSpacing && needsLeadingSpace(readPreviousCharacter()) {
 		text = " " + text
 	}
 
-	// Пишем текст в буфер обмена
 	clipboard.WriteAll(text)
-
-	// Небольшая задержка, чтобы ОС успела обновить буфер
 	time.Sleep(200 * time.Millisecond)
 
-	// Явно зажимаем Control
-	robotgo.KeyToggle("control", "down")
-	time.Sleep(50 * time.Millisecond)
-
-	// Нажимаем V
-	robotgo.KeyTap("v")
-	time.Sleep(50 * time.Millisecond)
-
-	// Отпускаем Control
-	robotgo.KeyToggle("control", "up")
+	sendCombo(vkControl, vkV)
 }
 
 func readPreviousCharacter() string {
@@ -82,18 +121,16 @@ func readPreviousCharacter() string {
 	clipboard.WriteAll("")
 	time.Sleep(40 * time.Millisecond)
 
-	robotgo.KeyToggle("shift", "down")
-	robotgo.KeyTap("left")
-	robotgo.KeyToggle("shift", "up")
+	sendCombo(vkShift, vkLeft)
 	time.Sleep(30 * time.Millisecond)
 
-	robotgo.KeyToggle("control", "down")
-	robotgo.KeyTap("c")
-	robotgo.KeyToggle("control", "up")
+	sendCombo(vkControl, vkC)
 	time.Sleep(70 * time.Millisecond)
 
 	selected, _ := clipboard.ReadAll()
-	robotgo.KeyTap("right")
+	sendKey(vkRight, false)
+	time.Sleep(20 * time.Millisecond)
+	sendKey(vkRight, true)
 	return selected
 }
 
@@ -141,9 +178,12 @@ func (w *LiveWriter) erase() {
 	if w.insertedRunes <= 0 {
 		return
 	}
-	robotgo.KeyToggle("control", "up")
+	sendKey(vkControl, true)
 	for i := 0; i < w.insertedRunes; i++ {
-		robotgo.KeyTap("backspace")
+		sendKey(vkBack, false)
+		time.Sleep(5 * time.Millisecond)
+		sendKey(vkBack, true)
+		time.Sleep(5 * time.Millisecond)
 	}
 	time.Sleep(50 * time.Millisecond)
 }

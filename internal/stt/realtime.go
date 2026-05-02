@@ -71,7 +71,7 @@ func NewRealtimeSTT(ctx context.Context, apiKey, model, language, prompt string,
 			},
 			"turn_detection": map[string]interface{}{
 				"type":                "server_vad",
-				"threshold":           0.5,
+				"threshold":           0.8, // Increased from 0.5 (noise reduction/sensitivity)
 				"prefix_padding_ms":   300,
 				"silence_duration_ms": 700,
 			},

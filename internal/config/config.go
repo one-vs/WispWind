@@ -208,8 +208,12 @@ func ReloadHot(database *db.DB, current *Config) *Config {
 	if v := getSetting(database, "STT_MODEL", "STT_MODEL"); v != "" {
 		next.Model = v
 	}
-	next.OpenAIKey = getSetting(database, "OPENAI_API_KEY", "OPENAI_API_KEY")
-	next.DeepgramKey = getSetting(database, "DEEPGRAM", "DEEPGRAM")
+	if v := getSetting(database, "OPENAI_API_KEY", "OPENAI_API_KEY"); v != "" {
+		next.OpenAIKey = v
+	}
+	if v := getSetting(database, "DEEPGRAM", "DEEPGRAM"); v != "" {
+		next.DeepgramKey = v
+	}
 	next.Language = getSetting(database, "STT_LANGUAGE", "STT_LANGUAGE")
 	next.STTPrompt = getSetting(database, "STT_PROMPT", "STT_PROMPT")
 	if v := getSetting(database, "PROMPT", "PROMPT"); v != "" {

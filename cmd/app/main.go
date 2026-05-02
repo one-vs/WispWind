@@ -167,35 +167,35 @@ func onReady(ctx context.Context, cfgHolder *config.Holder, database *db.DB, adm
 			c := cfgHolder.Get()
 			if text.Final && !c.DisableLLM {
 				llmStarted := time.Now()
-				var err error
 				llmResult, err := llm.ProcessText(ctx, c.OpenAIKey, c.Prompt, text.Text)
 				if err != nil {
+					// LLM failed — log and fall through to paste the raw transcript
+					// so the user never loses their dictation.
 					log.Printf("LLM Error after %s: %v", time.Since(llmStarted).Round(time.Millisecond), err)
-					widget.Hide()
-					setTrayRecording(false)
-					continue
+				} else {
+					finalText = llmResult.Text
+					appendUsage(database, usageItem, usage.Record{
+						Time:      time.Now(),
+						Kind:      "llm",
+						Provider:  "openai",
+						Model:     "gpt-4o-mini",
+						TextChars: len([]rune(finalText)),
+						ElapsedMS: time.Since(llmStarted).Milliseconds(),
+						Usage:     llmResult.Usage,
+						CostUSD:   llmCost(c, llmResult.Usage),
+						Text:      finalText,
+					})
+					log.Printf("LLM completed in %s", time.Since(llmStarted).Round(time.Millisecond))
 				}
-				finalText = llmResult.Text
-				appendUsage(database, usageItem, usage.Record{
-					Time:      time.Now(),
-					Kind:      "llm",
-					Provider:  "openai",
-					Model:     "gpt-4o-mini",
-					TextChars: len([]rune(finalText)),
-					ElapsedMS: time.Since(llmStarted).Milliseconds(),
-					Usage:     llmResult.Usage,
-					CostUSD:   llmCost(c, llmResult.Usage),
-					Text:      finalText,
-				})
-				log.Printf("LLM completed in %s", time.Since(llmStarted).Round(time.Millisecond))
 			}
 
 			pasteMu.Lock()
 			widget.Hide()
 			setTrayRecording(false)
 			targetMu.Lock()
-			focus.Restore(targetWindow)
+			tw := targetWindow
 			targetMu.Unlock()
+			focus.Restore(tw)
 			time.Sleep(120 * time.Millisecond)
 			if text.Live {
 				liveWriter.Replace(finalText)

@@ -120,6 +120,8 @@ func doTranscribeOpenAI(ctx context.Context, model, apiKey, language, prompt str
 	part.Write(wavData)
 	writer.WriteField("model", model)
 	writer.WriteField("response_format", "json")
+	// Add temperature 0 for more deterministic transcription without hallucinations
+	writer.WriteField("temperature", "0.0")
 	if language != "" && language != "auto" {
 		writer.WriteField("language", language)
 	}
