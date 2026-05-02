@@ -1,0 +1,11 @@
+.env
+scratch/
+logs/
+history/
+/usage/
+*.exe
+*.exe~
+*.db
+*.db-journal
+*.db-shm
+*.db-wal

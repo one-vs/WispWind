@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WispWind Admin</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/css/app.css" />
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="sidebar-brand">
+          <div class="brand-mark">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+            >
+              <path d="M3 12h2M7 8v8M11 5v14M15 9v6M19 11v2M21 12h0" />
+            </svg>
+          </div>
+          <div class="brand-text">
+            <div class="brand-name">WispWind</div>
+            <div class="brand-sub">Speech-to-Text Admin</div>
+          </div>
+        </div>
+
+        <nav class="sidebar-nav">
+          <button class="nav-item active" data-page="usage">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M3 3v18h18" />
+              <path d="M7 14l4-4 4 4 5-6" />
+            </svg>
+            <span>Usage</span>
+          </button>
+          <button class="nav-item" data-page="history">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+              <path d="M3 3v5h5" />
+              <path d="M12 7v5l3 2" />
+            </svg>
+            <span>History</span>
+          </button>
+          <button class="nav-item" data-page="logs">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <rect x="3" y="4" width="18" height="16" rx="2" />
+              <path d="M7 9l3 3-3 3" />
+              <path d="M13 15h5" />
+            </svg>
+            <span>Logs</span>
+          </button>
+          <button class="nav-item" data-page="settings">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <circle cx="12" cy="12" r="3" />
+              <path
+                d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h0a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v0a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"
+              />
+            </svg>
+            <span>Settings</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-user">
+          <div class="user-avatar">AD</div>
+          <div class="user-info">
+            <div class="user-name">Admin User</div>
+            <div class="user-role">Workspace Owner</div>
+          </div>
+        </div>
+      </aside>
+
+      <main class="content">
+        <!-- Usage Page -->
+        <section id="page-usage" class="page active">
+          <header class="page-header">
+            <div>
+              <h1>Usage Overview</h1>
+              <p class="page-sub">
+                Monitor your daily API consumption and processing metrics.
+              </p>
+            </div>
+            <div class="page-header-actions">
+              <div class="pill" id="todayPill">Today</div>
+            </div>
+          </header>
+
+          <div class="stat-grid">
+            <div class="stat-card">
+              <div class="stat-head">
+                <span class="stat-label">Total Cost</span>
+                <span class="stat-icon stat-icon-violet">
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <rect x="2" y="6" width="20" height="12" rx="2" />
+                    <path d="M2 10h20" />
+                  </svg>
+                </span>
+              </div>
+              <div class="stat-value">
+                $<span id="totalCost">0.00</span>
+                <span class="stat-unit">USD</span>
+              </div>
+              <div class="stat-trend muted" id="totalCostTrend">
+                — Today's total
+              </div>
+            </div>
+
+            <div class="stat-card">
+              <div class="stat-head">
+                <span class="stat-label">Total Time Processed</span>
+                <span class="stat-icon stat-icon-amber">
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <circle cx="12" cy="12" r="9" />
+                    <path d="M12 7v5l3 2" />
+                  </svg>
+                </span>
+              </div>
+              <div class="stat-value" id="totalTime">0h 00m</div>
+              <div class="stat-trend muted">— Audio processed today</div>
+            </div>
+
+            <div class="stat-card">
+              <div class="stat-head">
+                <span class="stat-label">Records Processed</span>
+                <span class="stat-icon stat-icon-teal">
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <path
+                      d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"
+                    />
+                    <path d="M14 3v5h5" />
+                    <path d="M9 13h6M9 17h4" />
+                  </svg>
+                </span>
+              </div>
+              <div class="stat-value" id="totalRecords">0</div>
+              <div class="stat-trend muted">— Transcriptions today</div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2 class="panel-title">Detailed Transcript Log</h2>
+              <div class="panel-actions">
+                <div class="search-box">
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <circle cx="11" cy="11" r="7" />
+                    <path d="m20 20-3.5-3.5" />
+                  </svg>
+                  <input
+                    type="text"
+                    id="usageSearch"
+                    placeholder="Search by model or kind..."
+                  />
+                </div>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Kind</th>
+                    <th>Model</th>
+                    <th>Duration</th>
+                    <th class="text-right">Cost</th>
+                  </tr>
+                </thead>
+                <tbody id="usageContainer"></tbody>
+              </table>
+            </div>
+            <div class="panel-footer" id="usageFooter">Showing 0 entries</div>
+          </div>
+        </section>
+
+        <section id="page-history" class="page">
+          <header class="page-header">
+            <div>
+              <h1>History</h1>
+              <p class="page-sub">
+                Browse and search past transcriptions by day.
+              </p>
+            </div>
+            <div class="page-header-actions">
+              <select id="historySelector" class="select-input">
+                <option value="">Loading...</option>
+              </select>
+            </div>
+          </header>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2 class="panel-title">Transcriptions</h2>
+              <div class="panel-actions">
+                <div class="search-box">
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <circle cx="11" cy="11" r="7" />
+                    <path d="m20 20-3.5-3.5" />
+                  </svg>
+                  <input
+                    type="text"
+                    id="historySearch"
+                    placeholder="Search transcript..."
+                  />
+                </div>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th style="width: 110px">Time</th>
+                    <th style="width: 120px">Kind</th>
+                    <th>Transcribed Text</th>
+                    <th style="width: 90px" class="text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody id="historyTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section id="page-logs" class="page">
+          <header class="page-header">
+            <div>
+              <h1>System Logs</h1>
+              <p class="page-sub">Inspect runtime logs to diagnose issues.</p>
+            </div>
+            <div class="page-header-actions">
+              <select id="logsSelector" class="select-input">
+                <option value="">Loading...</option>
+              </select>
+            </div>
+          </header>
+
+          <div class="panel">
+            <pre id="logsContent" class="code-viewer">Loading content...</pre>
+          </div>
+        </section>
+
+        <section id="page-settings" class="page">
+          <header class="page-header">
+            <div>
+              <h1>Settings</h1>
+              <p class="page-sub">
+                Manage your WispWind API configuration and workspace
+                preferences.
+              </p>
+            </div>
+          </header>
+
+          <form id="settingsForm" class="settings-layout">
+            <aside class="settings-tabs" id="settingsTabs"></aside>
+            <div class="settings-body" id="settingsBody"></div>
+
+            <div class="settings-footer">
+              <div class="save-success" id="saveSuccess">
+                Saved. Model, prompts and keys apply immediately. Hotkey and STT
+                mode require a restart.
+              </div>
+              <div class="settings-footer-actions">
+                <button type="button" class="btn btn-ghost" id="cancelBtn">
+                  Cancel
+                </button>
+                <button type="submit" class="btn btn-primary">
+                  Save Changes
+                </button>
+              </div>
+            </div>
+          </form>
+        </section>
+      </main>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+  </body>
+</html>
