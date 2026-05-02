@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-pkg-config
+            mingw-w64-x86_64-portaudio
+            mingw-w64-x86_64-zlib
+            mingw-w64-x86_64-libpng
+
+      - name: Build
+        shell: pwsh
+        run: |
+          $env:PATH             = "C:\msys64\mingw64\bin;$env:PATH"
+          $env:PKG_CONFIG_PATH  = "C:\msys64\mingw64\lib\pkgconfig"
+          $env:CGO_ENABLED      = "1"
+          $extld  = "-static -lwinmm -lole32 -lsetupapi -luuid -lpropsys"
+          $ldflags = "-H=windowsgui -s -w -extldflags `"$extld`""
+          go build -ldflags $ldflags -o wispwind.exe cmd/app/main.go
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            wispwind.exe
+            .env.example

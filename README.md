@@ -38,6 +38,19 @@ Windows 10/11 only. Audio capture, paste, focus tracking, global hotkeys and the
 
 CGO is required to build the static PortAudio bindings. The build script prepends `C:\msys64\mingw64\bin` to `PATH` automatically.
 
+## Download
+
+Pre-built Windows executables are available on the [Releases](../../releases) page. Each release includes `wispwind.exe` and `.env.example`.
+
+1. Download both files to the same folder.
+2. Rename `.env.example` to `.env` and set your API key:
+   ```env
+   OPENAI_API_KEY=sk-your-key
+   ```
+3. Run `wispwind.exe`. The tray icon appears and the admin panel opens at `http://127.0.0.1:8182`.
+
+The executable contains **no API keys** — they are read from `.env` at startup and then stored in the local SQLite database.
+
 ## Build
 
 From the repo root:
