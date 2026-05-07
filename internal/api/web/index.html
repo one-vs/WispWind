@@ -94,6 +94,21 @@
             </svg>
             <span>Settings</span>
           </button>
+          <button class="nav-item" data-page="help">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <circle cx="12" cy="12" r="10" />
+              <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+              <path d="M12 17h.01" />
+            </svg>
+            <span>Help</span>
+          </button>
         </nav>
 
         <div class="sidebar-user">
@@ -190,6 +205,79 @@
               </div>
               <div class="stat-value" id="totalRecords">0</div>
               <div class="stat-trend muted">— Transcriptions today</div>
+            </div>
+          </div>
+
+          <div class="stat-grid" style="margin-top: 12px">
+            <div class="stat-card">
+              <div class="stat-head">
+                <span class="stat-label">Lifetime Cost</span>
+                <span class="stat-icon stat-icon-violet">
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <rect x="2" y="6" width="20" height="12" rx="2" />
+                    <path d="M2 10h20" />
+                  </svg>
+                </span>
+              </div>
+              <div class="stat-value">
+                $<span id="lifetimeCost">0.00</span>
+                <span class="stat-unit">USD</span>
+              </div>
+              <div class="stat-trend muted" id="lifetimeCostTrend">
+                — All time total
+              </div>
+            </div>
+
+            <div class="stat-card">
+              <div class="stat-head">
+                <span class="stat-label">Lifetime Time</span>
+                <span class="stat-icon stat-icon-amber">
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <circle cx="12" cy="12" r="9" />
+                    <path d="M12 7v5l3 2" />
+                  </svg>
+                </span>
+              </div>
+              <div class="stat-value" id="lifetimeTime">0h 00m</div>
+              <div class="stat-trend muted">— Audio processed all time</div>
+            </div>
+
+            <div class="stat-card">
+              <div class="stat-head">
+                <span class="stat-label">Lifetime Records</span>
+                <span class="stat-icon stat-icon-teal">
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <path
+                      d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"
+                    />
+                    <path d="M14 3v5h5" />
+                    <path d="M9 13h6M9 17h4" />
+                  </svg>
+                </span>
+              </div>
+              <div class="stat-value" id="lifetimeRecords">0</div>
+              <div class="stat-trend muted">— Transcriptions all time</div>
             </div>
           </div>
 
@@ -338,6 +426,163 @@
               </div>
             </div>
           </form>
+        </section>
+
+        <section id="page-help" class="page">
+          <header class="page-header">
+            <div>
+              <h1>Help & Setup</h1>
+              <p class="page-sub">
+                How to configure WispWind, use hotkeys, and troubleshoot issues.
+              </p>
+            </div>
+          </header>
+
+          <div class="help-layout">
+            <div class="panel">
+              <div class="panel-head">
+                <h2 class="panel-title">Quick Start</h2>
+              </div>
+              <div class="help-body">
+                <p>
+                  On first launch the app creates a local SQLite database and
+                  reads settings from the <code>.env</code> file next to the
+                  executable. If <code>.env</code> is missing, the app still
+                  runs but you must set your API key through this dashboard
+                  (Settings page) before dictation will work.
+                </p>
+                <ol class="help-list">
+                  <li>
+                    Copy <code>.env.example</code> to <code>.env</code> in the
+                    same folder as <code>wispwind.exe</code>.
+                  </li>
+                  <li>
+                    Add at least one API key:
+                    <code>OPENAI_API_KEY=sk-...</code> or
+                    <code>DEEPGRAM_API_KEY=...</code>
+                  </li>
+                  <li>Restart the app so the key is picked up at startup.</li>
+                  <li>
+                    After the first run the admin panel is the source of truth
+                    for all settings.
+                  </li>
+                </ol>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-head">
+                <h2 class="panel-title">Hotkeys</h2>
+              </div>
+              <div class="help-body">
+                <p>
+                  Global hotkeys work from any application. Default mode is
+                  <strong>hold</strong>. You can switch to
+                  <strong>toggle</strong> in Settings.
+                </p>
+                <table class="data-table help-table">
+                  <thead>
+                    <tr>
+                      <th>Action</th>
+                      <th>Hold mode</th>
+                      <th>Toggle mode</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td><strong>Start recording</strong></td>
+                      <td>Hold <kbd>Ctrl</kbd> + <kbd>Space</kbd></td>
+                      <td>Press <kbd>Ctrl</kbd> + <kbd>Space</kbd></td>
+                    </tr>
+                    <tr>
+                      <td><strong>Stop / Send</strong></td>
+                      <td>Release the keys</td>
+                      <td>
+                        Press <kbd>Ctrl</kbd> + <kbd>Shift</kbd> +
+                        <kbd>Space</kbd>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td><strong>Cancel</strong></td>
+                      <td colspan="2">
+                        Press <kbd>Esc</kbd> while recording to discard audio
+                        and abort without sending anything to the API.
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+                <p class="help-note">
+                  Hotkey combinations can be changed in the Settings page, but a
+                  restart is required for the change to take effect.
+                </p>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-head">
+                <h2 class="panel-title">How It Works</h2>
+              </div>
+              <div class="help-body">
+                <ol class="help-list">
+                  <li>
+                    <strong>Record</strong> — press and hold the start hotkey. A
+                    green waveform widget appears near your cursor.
+                  </li>
+                  <li>
+                    <strong>Speak</strong> — your voice is captured as PCM audio
+                    at 24 kHz.
+                  </li>
+                  <li>
+                    <strong>Release</strong> — audio is sent to the configured
+                    STT provider (OpenAI or Deepgram).
+                  </li>
+                  <li>
+                    <strong>LLM polish</strong> — if enabled, the raw transcript
+                    is passed through an LLM for formatting / cleanup.
+                  </li>
+                  <li>
+                    <strong>Paste</strong> — the final text is typed into the
+                    window that was active when you started recording.
+                  </li>
+                </ol>
+                <p class="help-note">
+                  In <strong>realtime</strong> mode the text streams live as you
+                  speak. In <strong>batch</strong> mode nothing is sent until
+                  you release the hotkey.
+                </p>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-head">
+                <h2 class="panel-title">Troubleshooting & Logs</h2>
+              </div>
+              <div class="help-body">
+                <p>If dictation stops working or the widget does not appear:</p>
+                <ul class="help-list">
+                  <li>
+                    Check that your API key is set and has available quota.
+                  </li>
+                  <li>
+                    Verify the app is not already running — only one instance is
+                    allowed.
+                  </li>
+                  <li>
+                    Open the <strong>Logs</strong> page in this dashboard to see
+                    runtime errors.
+                  </li>
+                  <li>
+                    Log files are stored locally in the app data folder and
+                    rotate daily.
+                  </li>
+                </ul>
+                <p class="help-note">
+                  Common error: <em>"invalid_api_key"</em> — the key was not
+                  found or is expired. Add it via Settings and restart.
+                </p>
+              </div>
+            </div>
+          </div>
         </section>
       </main>
     </div>

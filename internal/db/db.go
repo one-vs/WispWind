@@ -142,10 +142,36 @@ func (d *DB) GetTodayUsage(ctx context.Context) ([]usage.Record, error) {
 	now := time.Now()
 	todayStr := now.Format("2006-01-02")
 
-	rows, err := d.db.QueryContext(ctx, `SELECT 
+	rows, err := d.db.QueryContext(ctx, `SELECT
 		time, kind, provider, model, duration_seconds, audio_bytes, text_chars, elapsed_ms,
 		input_tokens, text_tokens, audio_tokens, output_tokens, total_tokens, cost_usd
 		FROM usage_logs WHERE substr(time, 1, 10) = ? ORDER BY time ASC`, todayStr)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var records []usage.Record
+	for rows.Next() {
+		var r usage.Record
+		var t time.Time
+		if err := rows.Scan(
+			&t, &r.Kind, &r.Provider, &r.Model, &r.DurationSeconds, &r.AudioBytes, &r.TextChars, &r.ElapsedMS,
+			&r.Usage.InputTokens, &r.Usage.TextTokens, &r.Usage.AudioTokens, &r.Usage.OutputTokens, &r.Usage.TotalTokens, &r.CostUSD,
+		); err != nil {
+			return nil, err
+		}
+		r.Time = t
+		records = append(records, r)
+	}
+	return records, nil
+}
+
+func (d *DB) GetAllTimeUsage(ctx context.Context) ([]usage.Record, error) {
+	rows, err := d.db.QueryContext(ctx, `SELECT
+		time, kind, provider, model, duration_seconds, audio_bytes, text_chars, elapsed_ms,
+		input_tokens, text_tokens, audio_tokens, output_tokens, total_tokens, cost_usd
+		FROM usage_logs ORDER BY time ASC`)
 	if err != nil {
 		return nil, err
 	}

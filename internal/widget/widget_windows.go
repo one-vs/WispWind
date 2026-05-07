@@ -20,14 +20,21 @@ const (
 )
 
 var (
-	gdi32              = syscall.NewLazyDLL("gdi32.dll")
-	user32             = syscall.NewLazyDLL("user32.dll")
-	procCreateBrush    = gdi32.NewProc("CreateSolidBrush")
-	procCreatePen      = gdi32.NewProc("CreatePen")
-	procRoundRectRgn   = gdi32.NewProc("CreateRoundRectRgn")
-	procSetWindowRgn   = user32.NewProc("SetWindowRgn")
-	procSetLayeredAttr = user32.NewProc("SetLayeredWindowAttributes")
-	procSetWindowComp  = user32.NewProc("SetWindowCompositionAttribute")
+	gdi32               = syscall.NewLazyDLL("gdi32.dll")
+	user32              = syscall.NewLazyDLL("user32.dll")
+	procCreateBrush     = gdi32.NewProc("CreateSolidBrush")
+	procCreatePen       = gdi32.NewProc("CreatePen")
+	procRoundRectRgn    = gdi32.NewProc("CreateRoundRectRgn")
+	procSetWindowRgn    = user32.NewProc("SetWindowRgn")
+	procSetLayeredAttr  = user32.NewProc("SetLayeredWindowAttributes")
+	procSetWindowComp   = user32.NewProc("SetWindowCompositionAttribute")
+	procGetStockObject  = gdi32.NewProc("GetStockObject")
+	procSetDCBrushColor = gdi32.NewProc("SetDCBrushColor")
+	procSetDCPenColor   = gdi32.NewProc("SetDCPenColor")
+	procCreateCompatDC  = gdi32.NewProc("CreateCompatibleDC")
+	procCreateCompatBmp = gdi32.NewProc("CreateCompatibleBitmap")
+	procDeleteDC        = gdi32.NewProc("DeleteDC")
+	procBitBlt          = gdi32.NewProc("BitBlt")
 )
 
 var overlay = &state{
@@ -214,7 +221,7 @@ func run() {
 	close(overlay.ready)
 	overlay.mu.Unlock()
 
-	ticker := time.NewTicker(250 * time.Millisecond)
+	ticker := time.NewTicker(16 * time.Millisecond)
 	defer ticker.Stop()
 	go func() {
 		for range ticker.C {
@@ -254,16 +261,34 @@ func paint(hwnd win.HWND) {
 	hdc := win.BeginPaint(hwnd, &ps)
 	defer win.EndPaint(hwnd, &ps)
 
-	bg := createBrush(rgb(24, 24, 26))
-	oldBrush := win.SelectObject(hdc, win.HGDIOBJ(bg))
-	pen := createPen(rgb(24, 24, 26))
-	oldPen := win.SelectObject(hdc, win.HGDIOBJ(pen))
 	w := currentWidth()
 	h := currentHeight()
-	win.RoundRect(hdc, 0, 0, w+1, h+1, h, h)
-	win.SelectObject(hdc, oldPen)
+
+	// Double-buffer: draw to offscreen bitmap, blit in one shot
+	memDC, _, _ := procCreateCompatDC.Call(uintptr(hdc))
+	if memDC == 0 {
+		return
+	}
+	defer procDeleteDC.Call(memDC)
+
+	bmp, _, _ := procCreateCompatBmp.Call(uintptr(hdc), uintptr(w), uintptr(h))
+	if bmp == 0 {
+		return
+	}
+	defer win.DeleteObject(win.HGDIOBJ(bmp))
+
+	oldBmp := win.SelectObject(win.HDC(memDC), win.HGDIOBJ(bmp))
+	defer win.SelectObject(win.HDC(memDC), oldBmp)
+
+	// Background
+	bg := createBrush(rgb(24, 24, 26))
+	oldBrush := win.SelectObject(win.HDC(memDC), win.HGDIOBJ(bg))
+	pen := createPen(rgb(24, 24, 26))
+	oldPen := win.SelectObject(win.HDC(memDC), win.HGDIOBJ(pen))
+	win.RoundRect(win.HDC(memDC), 0, 0, w+1, h+1, h, h)
+	win.SelectObject(win.HDC(memDC), oldPen)
 	win.DeleteObject(win.HGDIOBJ(pen))
-	win.SelectObject(hdc, oldBrush)
+	win.SelectObject(win.HDC(memDC), oldBrush)
 	win.DeleteObject(win.HGDIOBJ(bg))
 
 	overlay.mu.Lock()
@@ -276,27 +301,33 @@ func paint(hwnd win.HWND) {
 	h = overlay.height
 	overlay.mu.Unlock()
 
-	win.SetBkMode(hdc, win.TRANSPARENT)
-	win.SetTextColor(hdc, win.RGB(175, 175, 175))
+	win.SetBkMode(win.HDC(memDC), win.TRANSPARENT)
+	win.SetTextColor(win.HDC(memDC), win.RGB(175, 175, 175))
 	if wide {
 		if status == "processing" {
-			drawProcessingWave(hdc, w, h, elapsed)
+			drawProcessingWave(win.HDC(memDC), w, h, elapsed)
 		} else {
-			drawWaveform(hdc, levels, levelAt, w, h)
-			win.SetTextColor(hdc, win.RGB(165, 165, 165))
-			drawText(hdc, w-44, 14, formatElapsed(elapsed))
+			drawWaveform(win.HDC(memDC), levels, levelAt, w, h)
+			win.SetTextColor(win.HDC(memDC), win.RGB(165, 165, 165))
+			drawText(win.HDC(memDC), w-44, 14, formatElapsed(elapsed))
 		}
 	} else {
-		drawIdleGlyph(hdc, h)
+		drawIdleGlyph(win.HDC(memDC), h)
 	}
+
+	// Copy offscreen to screen
+	procBitBlt.Call(uintptr(hdc), 0, 0, uintptr(w), uintptr(h), memDC, 0, 0, 0x00CC0020) // SRCCOPY
 }
 
 func drawWaveform(hdc win.HDC, levels []float64, levelAt int, w, h int32) {
-	wave := createBrush(rgb(232, 232, 232))
-	oldBrush := win.SelectObject(hdc, win.HGDIOBJ(wave))
+	// Use stock DC_BRUSH to avoid creating/destroying 50+ GDI objects per frame at 60 FPS
+	dcBrush, _, _ := procGetStockObject.Call(18) // DC_BRUSH
+	oldBrush := win.SelectObject(hdc, win.HGDIOBJ(dcBrush))
+	dcPen, _, _ := procGetStockObject.Call(19) // DC_PEN
+	oldPen := win.SelectObject(hdc, win.HGDIOBJ(dcPen))
 	defer func() {
 		win.SelectObject(hdc, oldBrush)
-		win.DeleteObject(win.HGDIOBJ(wave))
+		win.SelectObject(hdc, oldPen)
 	}()
 
 	baseY := h / 2
@@ -305,24 +336,37 @@ func drawWaveform(hdc win.HDC, levels []float64, levelAt int, w, h int32) {
 	barCount := int32(52)
 	step := float64(right-left) / float64(barCount)
 	for i := int32(0); i < barCount; i++ {
-		idx := (levelAt + int(i*int32(len(levels))/barCount)) % len(levels)
+		// Fixed X mapping: newest data at the right edge, contiguous in time.
+		// Each bar stays at its screen position; only its height changes.
+		idx := (levelAt - int(barCount) + int(i) + len(levels)) % len(levels)
 		if levels[idx] < 0.008 {
 			continue
 		}
 		lvl := smoothLevel(levels, idx)
 		lvl = math.Max(0.08, math.Min(1, lvl*7))
 		barH := int32(4 + lvl*22)
+
+		// Green gradient: dark green -> bright lime based on volume intensity
+		t := lvl
+		r := byte(30 + t*100)  // 30..130
+		g := byte(150 + t*105) // 150..255
+		b := byte(50 + t*50)   // 50..100
+		color := rgb(r, g, b)
+		procSetDCBrushColor.Call(uintptr(hdc), uintptr(color))
+		procSetDCPenColor.Call(uintptr(hdc), uintptr(color))
+
 		x := left + int32(float64(i)*step)
 		drawRoundBar(hdc, x, baseY-barH/2, 3, barH)
 	}
 }
 
 func drawIdleGlyph(hdc win.HDC, h int32) {
-	white := createBrush(rgb(255, 255, 255))
-	oldBrush := win.SelectObject(hdc, win.HGDIOBJ(white))
+	// Soft green mic icon even when idle
+	glyphBrush := createBrush(rgb(120, 220, 130))
+	oldBrush := win.SelectObject(hdc, win.HGDIOBJ(glyphBrush))
 	defer func() {
 		win.SelectObject(hdc, oldBrush)
-		win.DeleteObject(win.HGDIOBJ(white))
+		win.DeleteObject(win.HGDIOBJ(glyphBrush))
 	}()
 
 	baseY := h / 2
@@ -334,11 +378,13 @@ func drawIdleGlyph(hdc win.HDC, h int32) {
 }
 
 func drawProcessingWave(hdc win.HDC, w, h int32, elapsed time.Duration) {
-	wave := createBrush(rgb(232, 232, 232))
-	oldBrush := win.SelectObject(hdc, win.HGDIOBJ(wave))
+	dcBrush, _, _ := procGetStockObject.Call(18) // DC_BRUSH
+	oldBrush := win.SelectObject(hdc, win.HGDIOBJ(dcBrush))
+	dcPen, _, _ := procGetStockObject.Call(19) // DC_PEN
+	oldPen := win.SelectObject(hdc, win.HGDIOBJ(dcPen))
 	defer func() {
 		win.SelectObject(hdc, oldBrush)
-		win.DeleteObject(win.HGDIOBJ(wave))
+		win.SelectObject(hdc, oldPen)
 	}()
 
 	baseY := h / 2
@@ -353,6 +399,16 @@ func drawProcessingWave(hdc win.HDC, w, h int32, elapsed time.Duration) {
 		lvl := 0.18 + 0.82*(math.Sin(t)+1)/2
 		envelope := math.Sin(float64(i) / float64(barCount-1) * math.Pi)
 		barH := int32(4 + lvl*envelope*24)
+
+		// Gentle green pulse for processing
+		pulse := 0.5 + 0.5*math.Sin(t*0.7)
+		r := byte(40 + pulse*80)  // 40..120
+		g := byte(180 + pulse*75) // 180..255
+		b := byte(60 + pulse*40)  // 60..100
+		color := rgb(r, g, b)
+		procSetDCBrushColor.Call(uintptr(hdc), uintptr(color))
+		procSetDCPenColor.Call(uintptr(hdc), uintptr(color))
+
 		drawRoundBar(hdc, x, baseY-barH/2, 3, barH)
 	}
 }
@@ -388,7 +444,7 @@ func redraw(hwnd win.HWND) {
 	if hwnd == 0 {
 		return
 	}
-	win.InvalidateRect(hwnd, nil, true)
+	win.InvalidateRect(hwnd, nil, false)
 }
 
 func setRoundedRegion(hwnd win.HWND) {

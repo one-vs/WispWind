@@ -60,17 +60,24 @@
     if (page === "usage") loadUsage();
     if (page === "history") loadHistoryDates();
     if (page === "logs") loadLogFiles();
+    if (page === "help") loadHelp();
   }
 
   /* ---------- Usage ---------- */
   let usageData = [];
+  let allTimeData = [];
 
   async function loadUsage() {
     try {
-      const res = await fetch("/api/usage/today");
-      usageData = (await res.json()) || [];
+      const [todayRes, allRes] = await Promise.all([
+        fetch("/api/usage/today"),
+        fetch("/api/usage/alltime"),
+      ]);
+      usageData = (await todayRes.json()) || [];
+      allTimeData = (await allRes.json()) || [];
     } catch (e) {
       usageData = [];
+      allTimeData = [];
     }
     renderUsage();
   }
@@ -141,6 +148,23 @@
     document.getElementById("totalTime").innerText = fmtDuration(tSec);
     document.getElementById("usageFooter").innerText =
       "Showing " + filtered.length + " of " + rows.length + " entries";
+
+    // Lifetime stats
+    let ltCost = 0,
+      ltSec = 0;
+    allTimeData.forEach((r) => {
+      ltCost += r.cost_usd || 0;
+      ltSec += r.duration_seconds || 0;
+    });
+    document.getElementById("lifetimeCost").innerText = ltCost.toFixed(2);
+    document.getElementById("lifetimeRecords").innerText =
+      allTimeData.length.toLocaleString();
+    document.getElementById("lifetimeTime").innerText = fmtDuration(ltSec);
+  }
+
+  /* ---------- Help ---------- */
+  function loadHelp() {
+    // Help page is static HTML; nothing to fetch.
   }
 
   /* ---------- History ---------- */

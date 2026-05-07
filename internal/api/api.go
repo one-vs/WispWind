@@ -48,6 +48,7 @@ func Start(database *db.DB, logsDir, historyDir string, onReload func()) (string
 	mux.Handle("/static/", s.staticFS)
 	mux.HandleFunc("/api/settings", s.handleSettings)
 	mux.HandleFunc("/api/usage/today", s.handleTodayUsage)
+	mux.HandleFunc("/api/usage/alltime", s.handleAllTimeUsage)
 	mux.HandleFunc("/api/logs", s.handleListDir(logsDir))
 	mux.HandleFunc("/api/history/dates", s.handleHistoryDates)
 	mux.HandleFunc("/api/history/by-date", s.handleHistoryByDate)
@@ -148,6 +149,24 @@ func (s *Server) handleTodayUsage(w http.ResponseWriter, r *http.Request) {
 	}
 	if records == nil {
 		records = []usage.Record{} // Return empty array instead of null
+	}
+	json.NewEncoder(w).Encode(records)
+}
+
+func (s *Server) handleAllTimeUsage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	records, err := s.db.GetAllTimeUsage(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if records == nil {
+		records = []usage.Record{}
 	}
 	json.NewEncoder(w).Encode(records)
 }

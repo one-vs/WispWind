@@ -13,7 +13,7 @@ type Config struct {
 	Stop  string
 }
 
-func Listen(cfg Config, onStart func(), onStop func()) {
+func Listen(cfg Config, onStart func(), onStop func(), onCancel func()) {
 	mode := strings.ToLower(strings.TrimSpace(cfg.Mode))
 	if mode == "" {
 		mode = "hold"
@@ -51,6 +51,18 @@ func Listen(cfg Config, onStart func(), onStop func()) {
 		}
 	}
 
+	cancel := func() {
+		if time.Now().Before(blockedUntil) {
+			return
+		}
+		if recording && time.Since(lastAction) > 300*time.Millisecond {
+			recording = false
+			lastAction = time.Now()
+			blockedUntil = time.Now().Add(700 * time.Millisecond)
+			go onCancel()
+		}
+	}
+
 	hook.Register(hook.KeyDown, startCombo, func(e hook.Event) {
 		if mode == "toggle" && recording {
 			stop()
@@ -74,6 +86,10 @@ func Listen(cfg Config, onStart func(), onStop func()) {
 			})
 		}
 	}
+
+	hook.Register(hook.KeyDown, []string{"esc"}, func(e hook.Event) {
+		cancel()
+	})
 
 	s := hook.Start()
 	<-hook.Process(s)

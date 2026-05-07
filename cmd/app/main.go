@@ -119,7 +119,7 @@ func onReady(ctx context.Context, cfgHolder *config.Holder, database *db.DB, adm
 	systray.SetTooltip("Voice dictation")
 	setTrayRecording(false)
 	widget.Start()
-	usageItem, modelItem := setupTrayMenu(cfg, database, adminURL)
+	usageItem, lifetimeItem, modelItem := setupTrayMenu(cfg, database, adminURL)
 	cfgHolder.OnChange(func(c *config.Config) {
 		modelItem.SetTitle(fmt.Sprintf("Model: %s", c.Model))
 	})
@@ -174,7 +174,7 @@ func onReady(ctx context.Context, cfgHolder *config.Holder, database *db.DB, adm
 					log.Printf("LLM Error after %s: %v", time.Since(llmStarted).Round(time.Millisecond), err)
 				} else {
 					finalText = llmResult.Text
-					appendUsage(database, usageItem, usage.Record{
+					appendUsage(database, usageItem, lifetimeItem, usage.Record{
 						Time:      time.Now(),
 						Kind:      "llm",
 						Provider:  "openai",
@@ -229,7 +229,7 @@ func onReady(ctx context.Context, cfgHolder *config.Holder, database *db.DB, adm
 				continue
 			}
 			durationSeconds := estimateWAVDurationSeconds(wavData)
-			appendUsage(database, usageItem, usage.Record{
+			appendUsage(database, usageItem, lifetimeItem, usage.Record{
 				Time:            time.Now(),
 				Kind:            "stt",
 				Provider:        c.Provider,
@@ -362,6 +362,24 @@ func onReady(ctx context.Context, cfgHolder *config.Holder, database *db.DB, adm
 				}
 			}
 		},
+		func() {
+			fmt.Println()
+			if bootSTTMode == "realtime" {
+				rtMu.Lock()
+				if rtSession != nil {
+					audio.StopRecording()
+					rtSession.Close()
+					rtSession = nil
+				} else {
+					audio.StopRecording()
+				}
+				rtMu.Unlock()
+			} else {
+				audio.StopRecording()
+			}
+			widget.Hide()
+			setTrayRecording(false)
+		},
 	)
 }
 
@@ -370,10 +388,11 @@ func onExit() {
 	os.Exit(0)
 }
 
-func setupTrayMenu(cfg *config.Config, database *db.DB, adminURL string) (*systray.MenuItem, *systray.MenuItem) {
+func setupTrayMenu(cfg *config.Config, database *db.DB, adminURL string) (*systray.MenuItem, *systray.MenuItem, *systray.MenuItem) {
 	systray.AddMenuItem("WispWind", "Application status").Disable()
 	modelItem := addInfoItem("Model", cfg.Model)
 	usageItem := addInfoItem("Today", usageSummaryTitle(database))
+	lifetimeItem := addInfoItem("Lifetime", usageSummaryTitleAllTime(database))
 
 	systray.AddSeparator()
 	openAdmin := systray.AddMenuItem("Open Dashboard", "Open the admin panel in your browser")
@@ -394,32 +413,52 @@ func setupTrayMenu(cfg *config.Config, database *db.DB, adminURL string) (*systr
 		<-quitItem.ClickedCh
 		systray.Quit()
 	}()
-	return usageItem, modelItem
+	return usageItem, lifetimeItem, modelItem
 }
 
 func setTrayRecording(recording bool) {
 	systray.SetIcon(trayicon.StatusIcon(recording))
 }
 
-func appendUsage(database *db.DB, item *systray.MenuItem, record usage.Record) {
+func appendUsage(database *db.DB, todayItem, lifetimeItem *systray.MenuItem, record usage.Record) {
 	if err := database.InsertUsage(context.Background(), record); err != nil {
 		log.Printf("DB usage insert error: %v", err)
 	}
-	updateUsageMenuItem(database, item)
+	updateUsageMenuItem(database, todayItem, lifetimeItem)
 }
 
-func updateUsageMenuItem(database *db.DB, item *systray.MenuItem) {
-	if item == nil {
-		return
+func updateUsageMenuItem(database *db.DB, todayItem, lifetimeItem *systray.MenuItem) {
+	if todayItem != nil {
+		todayItem.SetTitle("Today: " + usageSummaryTitle(database))
+		todayItem.Disable()
 	}
-	item.SetTitle("Today: " + usageSummaryTitle(database))
-	item.Disable()
+	if lifetimeItem != nil {
+		lifetimeItem.SetTitle("Lifetime: " + usageSummaryTitleAllTime(database))
+		lifetimeItem.Disable()
+	}
 }
 
 func usageSummaryTitle(database *db.DB) string {
 	records, err := database.GetTodayUsage(context.Background())
 	if err != nil {
 		log.Printf("Usage summary error: %v", err)
+		return "usage unavailable"
+	}
+	var count int
+	var duration float64
+	var cost float64
+	for _, r := range records {
+		count++
+		duration += r.DurationSeconds
+		cost += r.CostUSD
+	}
+	return fmt.Sprintf("%s, $%.4f, %d calls", formatDuration(duration), cost, count)
+}
+
+func usageSummaryTitleAllTime(database *db.DB) string {
+	records, err := database.GetAllTimeUsage(context.Background())
+	if err != nil {
+		log.Printf("All-time usage summary error: %v", err)
 		return "usage unavailable"
 	}
 	var count int
