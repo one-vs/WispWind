@@ -2,6 +2,7 @@ package hotkey
 
 import (
 	"strings"
+	"sync"
 	"time"
 
 	hook "github.com/robotn/gohook"
@@ -12,6 +13,10 @@ type Config struct {
 	Start string
 	Stop  string
 }
+
+// confirmationDelay is how long the start combo must be held before
+// recording actually begins. This prevents accidental quick taps.
+const confirmationDelay = 120 * time.Millisecond
 
 func Listen(cfg Config, onStart func(), onStop func(), onCancel func()) {
 	mode := strings.ToLower(strings.TrimSpace(cfg.Mode))
@@ -27,23 +32,18 @@ func Listen(cfg Config, onStart func(), onStop func(), onCancel func()) {
 		stopCombo = []string{"ctrl", "shift", "space"}
 	}
 
+	var mu sync.Mutex
 	recording := false
 	var lastAction time.Time
 	var blockedUntil time.Time
 
-	start := func() {
-		if time.Now().Before(blockedUntil) {
-			return
-		}
-		if !recording && time.Since(lastAction) > 300*time.Millisecond {
-			recording = true
-			lastAction = time.Now()
-			go onStart()
-		}
-	}
+	var startPending bool
+	var startTimer *time.Timer
 
 	stop := func() {
-		if recording && time.Since(lastAction) > 300*time.Millisecond {
+		mu.Lock()
+		defer mu.Unlock()
+		if recording {
 			recording = false
 			lastAction = time.Now()
 			blockedUntil = time.Now().Add(700 * time.Millisecond)
@@ -52,6 +52,8 @@ func Listen(cfg Config, onStart func(), onStop func(), onCancel func()) {
 	}
 
 	cancel := func() {
+		mu.Lock()
+		defer mu.Unlock()
 		if time.Now().Before(blockedUntil) {
 			return
 		}
@@ -63,12 +65,52 @@ func Listen(cfg Config, onStart func(), onStop func(), onCancel func()) {
 		}
 	}
 
+	cancelStart := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if startPending {
+			startPending = false
+			if startTimer != nil {
+				startTimer.Stop()
+			}
+		}
+	}
+
+	tryStart := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if recording || startPending {
+			return
+		}
+		startPending = true
+		startTimer = time.AfterFunc(confirmationDelay, func() {
+			mu.Lock()
+			defer mu.Unlock()
+			if !startPending {
+				return
+			}
+			startPending = false
+			if time.Now().Before(blockedUntil) {
+				return
+			}
+			if !recording && time.Since(lastAction) > 300*time.Millisecond {
+				recording = true
+				lastAction = time.Now()
+				go onStart()
+			}
+		})
+	}
+
 	hook.Register(hook.KeyDown, startCombo, func(e hook.Event) {
-		if mode == "toggle" && recording {
+		mu.Lock()
+		isRecording := recording
+		mu.Unlock()
+		if mode == "toggle" && isRecording {
+			cancelStart()
 			stop()
 			return
 		}
-		start()
+		tryStart()
 	})
 
 	if mode == "toggle" {
@@ -77,17 +119,23 @@ func Listen(cfg Config, onStart func(), onStop func(), onCancel func()) {
 		})
 	} else {
 		hook.Register(hook.KeyUp, startCombo, func(e hook.Event) {
+			cancelStart()
 			stop()
 		})
 		for _, key := range startCombo {
 			k := key
 			hook.Register(hook.KeyUp, []string{k}, func(e hook.Event) {
+				cancelStart()
 				stop()
 			})
 		}
 	}
 
 	hook.Register(hook.KeyDown, []string{"esc"}, func(e hook.Event) {
+		// Ignore Escape when combined with modifiers (Ctrl+Esc, Shift+Esc, etc.)
+		if e.Mask != 0 {
+			return
+		}
 		cancel()
 	})
 
