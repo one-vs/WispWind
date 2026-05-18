@@ -31,14 +31,8 @@ import (
 )
 
 func main() {
-	kernel32 := syscall.NewLazyDLL("kernel32.dll")
-	procCreateMutex := kernel32.NewProc("CreateMutexW")
-	mutexName, _ := syscall.UTF16PtrFromString("WispWind_SingleInstance_Mutex")
-	handle, _, err := procCreateMutex.Call(0, 0, uintptr(unsafe.Pointer(mutexName)))
-	if err != nil && err.(syscall.Errno) == 183 {
-		os.Exit(0)
-	}
-	defer syscall.CloseHandle(syscall.Handle(handle))
+	cleanup := ensureSingleInstance()
+	defer cleanup()
 
 	store, err := storage.New()
 	if err != nil {
@@ -417,7 +411,7 @@ func setupTrayMenu(cfg *config.Config, database *db.DB, adminURL string) (*systr
 }
 
 func setTrayRecording(recording bool) {
-	systray.SetIcon(trayicon.StatusIcon(recording))
+	systray.SetIcon(getTrayIcon(recording))
 }
 
 func appendUsage(database *db.DB, todayItem, lifetimeItem *systray.MenuItem, record usage.Record) {
@@ -521,9 +515,6 @@ func openPathOnClick(ch <-chan struct{}, path func() string, beforeOpen func() e
 	}
 }
 
-func openPath(path string) error {
-	return exec.Command("rundll32", "url.dll,FileProtocolHandler", path).Start()
-}
 
 func currentMaskedKey(cfg *config.Config) string {
 	if cfg.Provider == "deepgram" {
