@@ -4,6 +4,7 @@ package focus
 
 /*
 #cgo LDFLAGS: -framework AppKit
+#cgo CFLAGS: -x objective-c
 
 #import <AppKit/AppKit.h>
 
@@ -18,7 +19,7 @@ int getActivePid() {
 void activatePid(int pid) {
     NSRunningApplication *app = [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
     if (app) {
-        [app activateWithOptions:NSApplicationActivateIgnoringOtherApps];
+        [app activateWithOptions:NSApplicationActivateAllWindows];
     }
 }
 */

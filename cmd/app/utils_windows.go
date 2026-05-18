@@ -30,3 +30,7 @@ func openPath(path string) error {
 func getTrayIcon(recording bool) []byte {
 	return trayicon.StatusIconICO(recording)
 }
+
+func requestRuntimePermissions() bool {
+	return true
+}

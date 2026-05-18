@@ -39,7 +39,7 @@ func StatusIconPNG(recording bool) []byte {
 func drawIconPixels(recording bool) []byte {
 	pixels := make([]byte, size*size*4)
 
-	c := rgba{245, 245, 245, 255}
+	c := rgba{32, 32, 32, 255}
 	radius := 7
 	if recording {
 		c = rgba{230, 62, 62, 255}

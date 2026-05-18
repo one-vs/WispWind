@@ -3,7 +3,6 @@
 package widget
 
 import (
-	"math"
 	"sync"
 	"time"
 	"unsafe"
@@ -12,9 +11,11 @@ import (
 )
 
 /*
-#cgo LDFLAGS: -framework Cocoa -framework Foundation
+#cgo LDFLAGS: -framework Cocoa -framework Foundation -framework QuartzCore
+#cgo CFLAGS: -x objective-c
 
 #import <Cocoa/Cocoa.h>
+#import <QuartzCore/QuartzCore.h>
 
 @interface OverlayView : NSView
 @property (nonatomic, assign) double levelAt;
@@ -26,7 +27,7 @@ import (
 
 @implementation OverlayView
 - (void)drawRect:(NSRect)dirtyRect {
-    [[NSColor colorWithRed:24.0/255.0 green:24.0/255.0 blue:26.0/255.0 alpha:0.92] set];
+    [[NSColor colorWithRed:10.0/255.0 green:10.0/255.0 blue:12.0/255.0 alpha:0.95] set];
     NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:[self bounds] xRadius:[self bounds].size.height/2 yRadius:[self bounds].size.height/2];
     [path fill];
 
@@ -43,68 +44,120 @@ import (
         if ([self.status isEqualToString:@"processing"]) {
             [self drawProcessingWave];
         } else {
-            [self drawWaveform];
+            [self drawSiriWave];
             [self drawTimer];
         }
     }
 }
 
-- (void)drawWaveform {
-    double baseY = [self bounds].size.height / 2;
-    double left = 22;
-    double right = [self bounds].size.width - 66;
-    int barCount = 52;
-    double step = (right - left) / barCount;
+- (void)drawSiriWave {
+    double width = [self bounds].size.width;
+    double height = [self bounds].size.height;
+    double baseY = height / 2;
+    
+    // Get current volume level (average of last few samples)
+    double avgLevel = 0;
+    int count = 8;
+    for (int i = 0; i < count; i++) {
+        int idx = ((int)self.levelAt - 1 - i + (int)self.levels.count) % (int)self.levels.count;
+        avgLevel += [[self.levels objectAtIndex:idx] doubleValue];
+    }
+    avgLevel /= count;
+    
+    double sensitivity = 15.0;
+    double normalizedLevel = fmax(0.01, fmin(1.0, avgLevel * sensitivity));
+    BOOL isSilent = (normalizedLevel < 0.04);
 
-    for (int i = 0; i < barCount; i++) {
-        int idx = ((int)self.levelAt - barCount + i + (int)self.levels.count) % (int)self.levels.count;
-        double lvl = [[self.levels objectAtIndex:idx] doubleValue];
-        if (lvl < 0.008) continue;
+    NSTimeInterval elapsed = [[NSDate date] timeIntervalSince1970] - self.started;
+    
+    // Draw 7 overlapping waves for a richer look
+    struct Wave {
+        double freq;
+        double amp;
+        double phase;
+        NSColor *color;
+        double width;
+    } waves[] = {
+        {1.1, 0.8, elapsed * 4.5, [NSColor colorWithRed:0.0 green:0.9 blue:1.0 alpha:0.8], 3.0},  // Cyan
+        {0.7, 0.6, elapsed * 2.8, [NSColor colorWithRed:0.7 green:0.2 blue:1.0 alpha:0.7], 2.5},  // Purple
+        {1.4, 0.4, elapsed * 5.5, [NSColor colorWithRed:1.0 green:0.1 blue:0.5 alpha:0.6], 2.0},  // Pink
+        {0.9, 0.5, elapsed * 3.2, [NSColor colorWithRed:0.2 green:1.0 blue:0.4 alpha:0.5], 2.0},  // Green
+        {1.8, 0.3, elapsed * 6.0, [NSColor colorWithRed:1.0 green:0.8 blue:0.0 alpha:0.4], 1.5},  // Gold
+        {0.5, 0.7, elapsed * 2.0, [NSColor colorWithRed:0.0 green:0.4 blue:1.0 alpha:0.5], 2.5},  // Blue
+        {2.2, 0.2, elapsed * 7.5, [NSColor colorWithRed:1.0 green:1.0 blue:1.0 alpha:0.3], 1.0}   // White
+    };
 
-        // Smooth
-        double prev = [[self.levels objectAtIndex:(idx-1+(int)self.levels.count)%(int)self.levels.count] doubleValue];
-        double next = [[self.levels objectAtIndex:(idx+1)%(int)self.levels.count] doubleValue];
-        lvl = prev*0.25 + lvl*0.5 + next*0.25;
+    if (isSilent) {
+        // Draw a single faint idle line
+        [[NSColor colorWithWhite:0.5 alpha:0.2] set];
+        NSBezierPath *p = [NSBezierPath bezierPath];
+        [p moveToPoint:NSMakePoint(35, baseY)];
+        [p lineToPoint:NSMakePoint(width - 90, baseY)];
+        p.lineWidth = 1.0;
+        [p stroke];
+        return;
+    }
 
-        lvl = fmax(0.08, fmin(1.0, lvl * 7.0));
-        double barH = 4 + lvl * 22;
+    // High volume "flash" effect
+    if (normalizedLevel > 0.6) {
+        [[NSColor colorWithWhite:1.0 alpha:(normalizedLevel - 0.6) * 0.3] set];
+        NSBezierPath *flash = [NSBezierPath bezierPathWithRoundedRect:[self bounds] xRadius:height/2 yRadius:height/2];
+        [flash fill];
+    }
 
-        double r = 30 + lvl * 100;
-        double g = 150 + lvl * 105;
-        double b = 50 + lvl * 50;
-        [[NSColor colorWithRed:r/255.0 green:g/255.0 blue:b/255.0 alpha:1.0] set];
-
-        NSRect rect = NSMakeRect(left + i * step, baseY - barH / 2, 3, barH);
-        NSBezierPath *p = [NSBezierPath bezierPathWithRoundedRect:rect xRadius:1.5 yRadius:1.5];
-        [p fill];
+    for (int i = 0; i < 7; i++) {
+        struct Wave wave = waves[i];
+        NSBezierPath *p = [NSBezierPath bezierPath];
+        [wave.color set];
+        
+        double left = 35;
+        double right = width - 90;
+        double waveWidth = right - left;
+        
+        [p moveToPoint:NSMakePoint(left, baseY)];
+        
+        for (double x = 0; x <= waveWidth; x += 1.0) {
+            double normX = x / waveWidth;
+            double envelope = pow(sin(normX * M_PI), 2.5);
+            
+            double y = baseY + sin(x * 0.07 * wave.freq + wave.phase) * (height * 0.45) * normalizedLevel * envelope * wave.amp;
+            [p lineToPoint:NSMakePoint(left + x, y)];
+        }
+        
+        p.lineWidth = wave.width;
+        p.lineCapStyle = NSLineCapStyleRound;
+        [p stroke];
     }
 }
 
 - (void)drawProcessingWave {
-    double baseY = [self bounds].size.height / 2;
-    double left = 26;
-    double right = [self bounds].size.width - 26;
-    int barCount = 48;
-    double step = (right - left) / barCount;
-    double elapsed = [[NSDate date] timeIntervalSince1970] - self.started;
-    double phase = elapsed * 4.2;
+    double width = [self bounds].size.width;
+    double height = [self bounds].size.height;
+    double baseY = height / 2;
+    NSTimeInterval elapsed = [[NSDate date] timeIntervalSince1970] - self.started;
+    
+    double left = 35;
+    double right = width - 35;
+    double waveWidth = right - left;
 
-    for (int i = 0; i < barCount; i++) {
-        double x = left + i * step;
-        double t = i * 0.36 - phase;
-        double lvl = 0.18 + 0.82 * (sin(t) + 1) / 2;
-        double envelope = sin((double)i / (barCount - 1) * M_PI);
-        double barH = 4 + lvl * envelope * 24;
-
-        double pulse = 0.5 + 0.5 * sin(t * 0.7);
-        double r = 40 + pulse * 80;
-        double g = 180 + pulse * 75;
-        double b = 60 + pulse * 40;
-        [[NSColor colorWithRed:r/255.0 green:g/255.0 blue:b/255.0 alpha:1.0] set];
-
-        NSRect rect = NSMakeRect(x, baseY - barH / 2, 3, barH);
-        NSBezierPath *p = [NSBezierPath bezierPathWithRoundedRect:rect xRadius:1.5 yRadius:1.5];
-        [p fill];
+    NSColor *purple = [NSColor colorWithRed:0.7 green:0.3 blue:1.0 alpha:1.0];
+    
+    for (int i = 0; i < 3; i++) {
+        NSBezierPath *p = [NSBezierPath bezierPath];
+        double alpha = 0.8 / (i + 1);
+        double lineWidth = 2.0 + (i * 4.0);
+        [[purple colorWithAlphaComponent:alpha] set];
+        
+        [p moveToPoint:NSMakePoint(left, baseY)];
+        for (double x = 0; x <= waveWidth; x += 1.0) {
+            double normX = x / waveWidth;
+            double envelope = sin(normX * M_PI);
+            double y = baseY + sin(x * 0.12 - elapsed * 18.0) * 12.0 * envelope;
+            [p lineToPoint:NSMakePoint(left + x, y)];
+        }
+        p.lineWidth = lineWidth;
+        p.lineCapStyle = NSLineCapStyleRound;
+        [p stroke];
     }
 }
 
@@ -113,18 +166,23 @@ import (
     int totalSeconds = (int)elapsed;
     NSString *timeStr = [NSString stringWithFormat:@"%d:%02d", totalSeconds / 60, totalSeconds % 60];
 
+    // Vertically center text: (height - fontHeight) / 2
+    // For 14pt font, fontHeight is roughly 16-18pt. 
+    // (48 - 16) / 2 = 16.
+    double textY = 16; 
+
     NSDictionary *attrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:13],
-        NSForegroundColorAttributeName: [NSColor colorWithRed:165.0/255.0 green:165.0/255.0 blue:165.0/255.0 alpha:1.0]
+        NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:14 weight:NSFontWeightBold],
+        NSForegroundColorAttributeName: [NSColor whiteColor]
     };
-    [timeStr drawAtPoint:NSMakePoint([self bounds].size.width - 44, 14) withAttributes:attrs];
+    [timeStr drawAtPoint:NSMakePoint([self bounds].size.width - 65, textY) withAttributes:attrs];
 }
 @end
 
 static NSWindow *window;
 static OverlayView *view;
 
-void initWindow() {
+void wispwind_initWindow() {
     dispatch_async(dispatch_get_main_queue(), ^{
         NSRect frame = NSMakeRect(0, 0, 32, 24);
         window = [[NSWindow alloc] initWithContentRect:frame
@@ -143,13 +201,13 @@ void initWindow() {
     });
 }
 
-void hideWindow() {
+void wispwind_hideWindow() {
     dispatch_async(dispatch_get_main_queue(), ^{
         [window orderOut:nil];
     });
 }
 
-void updateWindow(int x, int y, int w, int h, bool wide, bool visible, const char *status, double started, double *levels, int levelCount, int levelAt) {
+void wispwind_updateWindow(int x, int y, int w, int h, bool wide, bool visible, const char *status, double started, double *levels, int levelCount, int levelAt) {
     NSString *statusStr = [NSString stringWithUTF8String:status];
     NSMutableArray *levelsArr = [NSMutableArray arrayWithCapacity:levelCount];
     for (int i = 0; i < levelCount; i++) {
@@ -179,8 +237,8 @@ import "C"
 const (
 	compactWidth  = 32
 	compactHeight = 24
-	wideWidth     = 360
-	wideHeight    = 44
+	wideWidth     = 380
+	wideHeight    = 48
 )
 
 var overlay = &state{
@@ -189,17 +247,20 @@ var overlay = &state{
 }
 
 type state struct {
-	mu      sync.Mutex
-	levels  []float64
-	levelAt int
-	status  string
-	started time.Time
-	visible bool
-	wide    bool
-	width   int32
-	height  int32
-	ready   chan struct{}
-	stopCh  chan struct{}
+	mu       sync.Mutex
+	levels   []float64
+	levelAt  int
+	status   string
+	started  time.Time
+	visible  bool
+	wide     bool
+	width    int32
+	height   int32
+	anchorX  int
+	anchorY  int
+	anchored bool
+	ready    chan struct{}
+	stopCh   chan struct{}
 }
 
 func Start() {
@@ -212,7 +273,7 @@ func Start() {
 	overlay.stopCh = make(chan struct{})
 	overlay.mu.Unlock()
 
-	C.initWindow()
+	C.wispwind_initWindow()
 	close(overlay.ready)
 
 	go func() {
@@ -223,14 +284,11 @@ func Start() {
 			case <-ticker.C:
 				overlay.mu.Lock()
 				if overlay.visible {
-					mx, my := robotgo.GetMousePos()
-					x := mx + 16
-					y := my + 16
-					_, sh := robotgo.GetScreenSize()
-					y = sh - y - int(overlay.height)
+					x := overlay.anchorX
+					y := overlay.anchorY
 
 					status := C.CString(overlay.status)
-					C.updateWindow(
+					C.wispwind_updateWindow(
 						C.int(x), C.int(y), C.int(overlay.width), C.int(overlay.height),
 						C.bool(overlay.wide), C.bool(overlay.visible),
 						status,
@@ -262,6 +320,32 @@ func ShowIdle() {
 func Show(status string) {
 	Start()
 	<-overlay.ready
+
+	mx, my := robotgo.GetMousePos()
+	sw, sh := robotgo.GetScreenSize()
+
+	const gap = 10
+	const edgePad = 12
+
+	w := int(wideWidth)
+	h := int(wideHeight)
+
+	anchorX := mx - w/2
+	if anchorX+w > sw-edgePad {
+		anchorX = sw - w - edgePad
+	}
+	if anchorX < edgePad {
+		anchorX = edgePad
+	}
+
+	anchorY := sh - my - gap - h
+	if anchorY < edgePad {
+		anchorY = sh - my + gap
+	}
+	if anchorY+h > sh-edgePad {
+		anchorY = sh - h - edgePad
+	}
+
 	overlay.mu.Lock()
 	overlay.status = status
 	overlay.started = time.Now()
@@ -269,6 +353,9 @@ func Show(status string) {
 	overlay.wide = true
 	overlay.width = wideWidth
 	overlay.height = wideHeight
+	overlay.anchorX = anchorX
+	overlay.anchorY = anchorY
+	overlay.anchored = true
 	for i := range overlay.levels {
 		overlay.levels[i] = 0
 	}
@@ -280,8 +367,9 @@ func Hide() {
 	<-overlay.ready
 	overlay.mu.Lock()
 	overlay.visible = false
+	overlay.anchored = false
 	overlay.mu.Unlock()
-	C.hideWindow()
+	C.wispwind_hideWindow()
 }
 
 func SetStatus(status string) {

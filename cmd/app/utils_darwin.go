@@ -2,6 +2,29 @@
 
 package main
 
+/*
+#cgo LDFLAGS: -framework ApplicationServices -framework CoreFoundation
+#include <ApplicationServices/ApplicationServices.h>
+#include <CoreFoundation/CoreFoundation.h>
+
+static int wispwind_request_accessibility_permission() {
+	const void *keys[] = { kAXTrustedCheckOptionPrompt };
+	const void *values[] = { kCFBooleanTrue };
+	CFDictionaryRef options = CFDictionaryCreate(
+		kCFAllocatorDefault,
+		keys,
+		values,
+		1,
+		&kCFTypeDictionaryKeyCallBacks,
+		&kCFTypeDictionaryValueCallBacks
+	);
+	Boolean trusted = AXIsProcessTrustedWithOptions(options);
+	CFRelease(options);
+	return trusted ? 1 : 0;
+}
+*/
+import "C"
+
 import (
 	"fmt"
 	"os"
@@ -39,4 +62,8 @@ func openPath(path string) error {
 
 func getTrayIcon(recording bool) []byte {
 	return trayicon.StatusIconPNG(recording)
+}
+
+func requestRuntimePermissions() bool {
+	return C.wispwind_request_accessibility_permission() == 1
 }
