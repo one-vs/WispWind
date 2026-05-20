@@ -2,7 +2,13 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BIN_PATH="${1:-$ROOT_DIR/dist/wispwind-darwin-arm64}"
+ARCH=$(uname -m)
+if [ "$ARCH" = "x86_64" ] || [ "$ARCH" = "amd64" ]; then
+  DEFAULT_BIN="$ROOT_DIR/dist/wispwind-darwin-amd64"
+else
+  DEFAULT_BIN="$ROOT_DIR/dist/wispwind-darwin-arm64"
+fi
+BIN_PATH="${1:-$DEFAULT_BIN}"
 APP_NAME="WispWind"
 LABEL="com.wispwind.app"
 BUNDLE_ID="com.wispwind.desktop"
