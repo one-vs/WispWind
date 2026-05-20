@@ -1,3 +1,5 @@
+//go:build !darwin
+
 package hotkey
 
 import (
@@ -132,7 +134,6 @@ func Listen(cfg Config, onStart func(), onStop func(), onCancel func()) {
 	}
 
 	hook.Register(hook.KeyDown, []string{"esc"}, func(e hook.Event) {
-		// Ignore Escape when combined with modifiers (Ctrl+Esc, Shift+Esc, etc.)
 		if e.Mask != 0 {
 			return
 		}

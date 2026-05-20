@@ -1,25 +1,53 @@
 package trayicon
 
-import "encoding/binary"
+import (
+	"bytes"
+	"encoding/binary"
+	"image"
+	"image/color"
+	"image/png"
+)
 
 const size = 32
 
 func Icon() []byte {
-	return StatusIcon(false)
+	return StatusIconICO(false)
 }
 
-func StatusIcon(recording bool) []byte {
+func StatusIconICO(recording bool) []byte {
+	pixels := drawIconPixels(recording)
+	return encodeICO(pixels)
+}
+
+func StatusIconPNG(recording bool) []byte {
+	img := image.NewRGBA(image.Rect(0, 0, size, size))
+	pixels := drawIconPixels(recording)
+
+	for y := 0; y < size; y++ {
+		for x := 0; x < size; x++ {
+			i := (y*size + x) * 4
+			// pixels are stored as BGRA for ICO
+			img.Set(x, y, color.RGBA{pixels[i+2], pixels[i+1], pixels[i], pixels[i+3]})
+		}
+	}
+
+	var buf bytes.Buffer
+	png.Encode(&buf, img)
+	return buf.Bytes()
+}
+
+func drawIconPixels(recording bool) []byte {
 	pixels := make([]byte, size*size*4)
 
-	c := color{245, 245, 245, 255}
+	c := rgba{32, 32, 32, 255}
 	radius := 7
 	if recording {
-		c = color{230, 62, 62, 255}
+		c = rgba{230, 62, 62, 255}
 		radius = 3
 	}
 	fillRoundedRect(pixels, 7, 7, 25, 25, radius, c)
 
-	return encodeICO(pixels)
+	return pixels
 }
 
 func encodeICO(pixels []byte) []byte {
@@ -52,11 +80,11 @@ func encodeICO(pixels []byte) []byte {
 	return icon
 }
 
-type color struct {
+type rgba struct {
 	r, g, b, a byte
 }
 
-func setPixel(pixels []byte, x, y int, c color) {
+func setPixel(pixels []byte, x, y int, c rgba) {
 	if x < 0 || y < 0 || x >= size || y >= size {
 		return
 	}
@@ -67,7 +95,7 @@ func setPixel(pixels []byte, x, y int, c color) {
 	pixels[i+3] = c.a
 }
 
-func fillRect(pixels []byte, x1, y1, x2, y2 int, c color) {
+func fillRect(pixels []byte, x1, y1, x2, y2 int, c rgba) {
 	for y := y1; y < y2; y++ {
 		for x := x1; x < x2; x++ {
 			setPixel(pixels, x, y, c)
@@ -75,7 +103,7 @@ func fillRect(pixels []byte, x1, y1, x2, y2 int, c color) {
 	}
 }
 
-func fillCircle(pixels []byte, cx, cy, r int, c color) {
+func fillCircle(pixels []byte, cx, cy, r int, c rgba) {
 	rr := r * r
 	for y := cy - r; y <= cy+r; y++ {
 		for x := cx - r; x <= cx+r; x++ {
@@ -87,7 +115,7 @@ func fillCircle(pixels []byte, cx, cy, r int, c color) {
 	}
 }
 
-func fillRoundedRect(pixels []byte, x1, y1, x2, y2, r int, c color) {
+func fillRoundedRect(pixels []byte, x1, y1, x2, y2, r int, c rgba) {
 	for y := y1; y < y2; y++ {
 		for x := x1; x < x2; x++ {
 			dx := 0

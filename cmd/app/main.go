@@ -5,13 +5,11 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"os/signal"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
-	"unsafe"
 
 	"wispwind/internal/api"
 	"wispwind/internal/audio"
@@ -23,7 +21,6 @@ import (
 	"wispwind/internal/paste"
 	"wispwind/internal/storage"
 	"wispwind/internal/stt"
-	"wispwind/internal/trayicon"
 	"wispwind/internal/usage"
 	"wispwind/internal/widget"
 
@@ -31,14 +28,8 @@ import (
 )
 
 func main() {
-	kernel32 := syscall.NewLazyDLL("kernel32.dll")
-	procCreateMutex := kernel32.NewProc("CreateMutexW")
-	mutexName, _ := syscall.UTF16PtrFromString("WispWind_SingleInstance_Mutex")
-	handle, _, err := procCreateMutex.Call(0, 0, uintptr(unsafe.Pointer(mutexName)))
-	if err != nil && err.(syscall.Errno) == 183 {
-		os.Exit(0)
-	}
-	defer syscall.CloseHandle(syscall.Handle(handle))
+	cleanup := ensureSingleInstance()
+	defer cleanup()
 
 	store, err := storage.New()
 	if err != nil {
@@ -93,6 +84,10 @@ func main() {
 	log.Printf("Starting WispWind | %s: %s (%s) | Key: %s | Hotkey: %s | LLM: %s",
 		cfg.Provider, cfg.Model, cfg.STTMode, maskedKey, hotkeyInfo, llmStatus)
 
+	if !requestRuntimePermissions() {
+		log.Printf("Accessibility permission is not granted yet; smart paste may be limited until WispWind is enabled in Privacy & Security")
+	}
+
 	if err := audio.Init(); err != nil {
 		log.Fatalf("Audio init failed: %v", err)
 	}
@@ -100,6 +95,9 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	var currentCancel context.CancelFunc
+	var cancelMu sync.Mutex
 
 	// Graceful shutdown
 	sigs := make(chan os.Signal, 1)
@@ -109,13 +107,26 @@ func main() {
 		systray.Quit()
 	}()
 
-	systray.Run(func() { onReady(ctx, cfgHolder, database, adminURL) }, onExit)
+	systray.Run(func() {
+		onReady(ctx, cfgHolder, database, adminURL, func(c context.CancelFunc) {
+			cancelMu.Lock()
+			currentCancel = c
+			cancelMu.Unlock()
+		}, func() {
+			cancelMu.Lock()
+			if currentCancel != nil {
+				currentCancel()
+				currentCancel = nil
+			}
+			cancelMu.Unlock()
+		})
+	}, onExit)
 }
 
-func onReady(ctx context.Context, cfgHolder *config.Holder, database *db.DB, adminURL string) {
+func onReady(ctx context.Context, cfgHolder *config.Holder, database *db.DB, adminURL string, setCancel func(context.CancelFunc), clearCancel func()) {
 	cfg := cfgHolder.Get()
 	bootSTTMode := cfg.STTMode
-	systray.SetTitle("VoiceTyping")
+	systray.SetTitle("")
 	systray.SetTooltip("Voice dictation")
 	setTrayRecording(false)
 	widget.Start()
@@ -133,6 +144,7 @@ func onReady(ctx context.Context, cfgHolder *config.Holder, database *db.DB, adm
 	resultChan := make(chan transcriptResult, 32)
 	var targetMu sync.Mutex
 	var targetWindow focus.Handle
+	var targetPasteContext paste.SmartContext
 
 	// Pipeline (Result -> LLM -> Paste)
 	go func() {
@@ -142,11 +154,17 @@ func onReady(ctx context.Context, cfgHolder *config.Holder, database *db.DB, adm
 		var lastLiveAt time.Time
 
 		for text := range resultChan {
+			// Create a cancellable context for this specific processing task
+			procCtx, procCancel := context.WithCancel(ctx)
+			setCancel(procCancel)
+
 			if strings.TrimSpace(text.Text) == "" {
 				if text.Final {
 					widget.Hide()
 					setTrayRecording(false)
 				}
+				clearCancel()
+				procCancel()
 				continue
 			}
 
@@ -155,11 +173,17 @@ func onReady(ctx context.Context, cfgHolder *config.Holder, database *db.DB, adm
 			if text.Live && !text.Final {
 				pasteMu.Lock()
 				if text.Text != lastLiveText && time.Since(lastLiveAt) >= 250*time.Millisecond {
+					targetMu.Lock()
+					smartCtx := targetPasteContext
+					targetMu.Unlock()
+					liveWriter.SetSmartContext(smartCtx)
 					liveWriter.Replace(text.Text)
 					lastLiveText = text.Text
 					lastLiveAt = time.Now()
 				}
 				pasteMu.Unlock()
+				clearCancel()
+				procCancel()
 				continue
 			}
 
@@ -167,8 +191,14 @@ func onReady(ctx context.Context, cfgHolder *config.Holder, database *db.DB, adm
 			c := cfgHolder.Get()
 			if text.Final && !c.DisableLLM {
 				llmStarted := time.Now()
-				llmResult, err := llm.ProcessText(ctx, c.OpenAIKey, c.Prompt, text.Text)
+				llmResult, err := llm.ProcessText(procCtx, c.OpenAIKey, c.Prompt, text.Text)
 				if err != nil {
+					if procCtx.Err() == context.Canceled {
+						log.Printf("LLM cancelled after %s", time.Since(llmStarted).Round(time.Millisecond))
+						clearCancel()
+						procCancel()
+						continue
+					}
 					// LLM failed — log and fall through to paste the raw transcript
 					// so the user never loses their dictation.
 					log.Printf("LLM Error after %s: %v", time.Since(llmStarted).Round(time.Millisecond), err)
@@ -189,30 +219,44 @@ func onReady(ctx context.Context, cfgHolder *config.Holder, database *db.DB, adm
 				}
 			}
 
+			if procCtx.Err() == context.Canceled {
+				clearCancel()
+				procCancel()
+				continue
+			}
+
 			pasteMu.Lock()
 			widget.Hide()
 			setTrayRecording(false)
 			targetMu.Lock()
 			tw := targetWindow
+			smartCtx := targetPasteContext
 			targetMu.Unlock()
 			focus.Restore(tw)
 			time.Sleep(120 * time.Millisecond)
 			if text.Live {
+				liveWriter.SetSmartContext(smartCtx)
 				liveWriter.Replace(finalText)
 				lastLiveText = finalText
 				lastLiveAt = time.Time{}
 				liveWriter.Forget()
 				lastLiveText = ""
 			} else {
-				paste.PasteTextSmart(finalText)
+				paste.PasteTextSmartWithContext(finalText, smartCtx)
 			}
 			pasteMu.Unlock()
+			clearCancel()
+			procCancel()
 		}
 	}()
 
 	processor := make(chan []byte, 10)
 	go func() {
 		for wavData := range processor {
+			// Create a cancellable context for this specific transcription task
+			procCtx, procCancel := context.WithCancel(ctx)
+			setCancel(procCancel)
+
 			transcribeStarted := time.Now()
 			c := cfgHolder.Get()
 			var apiKey string
@@ -221,11 +265,17 @@ func onReady(ctx context.Context, cfgHolder *config.Holder, database *db.DB, adm
 			} else {
 				apiKey = c.OpenAIKey
 			}
-			result, err := stt.Transcribe(ctx, c.Provider, c.Model, apiKey, c.Language, c.STTPrompt, wavData)
+			result, err := stt.Transcribe(procCtx, c.Provider, c.Model, apiKey, c.Language, c.STTPrompt, wavData)
 			if err != nil {
-				log.Printf("STT Error after %s: %v", time.Since(transcribeStarted).Round(time.Millisecond), err)
+				if procCtx.Err() == context.Canceled {
+					log.Printf("STT cancelled after %s", time.Since(transcribeStarted).Round(time.Millisecond))
+				} else {
+					log.Printf("STT Error after %s: %v", time.Since(transcribeStarted).Round(time.Millisecond), err)
+				}
 				widget.Hide()
 				setTrayRecording(false)
+				clearCancel()
+				procCancel()
 				continue
 			}
 			durationSeconds := estimateWAVDurationSeconds(wavData)
@@ -243,7 +293,12 @@ func onReady(ctx context.Context, cfgHolder *config.Holder, database *db.DB, adm
 				Text:            result.Text,
 			})
 			log.Printf("STT completed in %s, duration: %.1fs, chars: %d, cost: $%.6f", time.Since(transcribeStarted).Round(time.Millisecond), durationSeconds, len([]rune(result.Text)), sttCost(c, result.Usage, durationSeconds))
-			resultChan <- transcriptResult{Text: result.Text, Final: true}
+			
+			if procCtx.Err() != context.Canceled {
+				resultChan <- transcriptResult{Text: result.Text, Final: true}
+			}
+			clearCancel()
+			procCancel()
 		}
 	}()
 
@@ -259,8 +314,11 @@ func onReady(ctx context.Context, cfgHolder *config.Holder, database *db.DB, adm
 		},
 		func() {
 			setTrayRecording(true)
+			target := focus.Current()
+			smartCtx := paste.CaptureContextForPID(int32(target))
 			targetMu.Lock()
-			targetWindow = focus.Current()
+			targetWindow = target
+			targetPasteContext = smartCtx
 			targetMu.Unlock()
 			widget.Show("listening")
 			if bootSTTMode == "realtime" {
@@ -362,8 +420,9 @@ func onReady(ctx context.Context, cfgHolder *config.Holder, database *db.DB, adm
 				}
 			}
 		},
-		func() {
+		func() { // onCancel
 			fmt.Println()
+			clearCancel()
 			if bootSTTMode == "realtime" {
 				rtMu.Lock()
 				if rtSession != nil {
@@ -417,7 +476,7 @@ func setupTrayMenu(cfg *config.Config, database *db.DB, adminURL string) (*systr
 }
 
 func setTrayRecording(recording bool) {
-	systray.SetIcon(trayicon.StatusIcon(recording))
+	systray.SetIcon(getTrayIcon(recording))
 }
 
 func appendUsage(database *db.DB, todayItem, lifetimeItem *systray.MenuItem, record usage.Record) {
@@ -521,9 +580,6 @@ func openPathOnClick(ch <-chan struct{}, path func() string, beforeOpen func() e
 	}
 }
 
-func openPath(path string) error {
-	return exec.Command("rundll32", "url.dll,FileProtocolHandler", path).Start()
-}
 
 func currentMaskedKey(cfg *config.Config) string {
 	if cfg.Provider == "deepgram" {
