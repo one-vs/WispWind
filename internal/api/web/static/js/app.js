@@ -263,22 +263,27 @@
     try {
       const res = await fetch("/api/logs");
       let files = (await res.json()) || [];
+      files = files.filter((f) => !f.startsWith("."));
       if (!files.length) {
         sel.innerHTML = '<option value="">No files</option>';
         content.innerText = "No log files found.";
         return;
       }
-      files.reverse();
-      sel.innerHTML = files
-        .map(
-          (f) =>
-            '<option value="/logs/' +
-            encodeURIComponent(f) +
-            '">' +
-            escapeHTML(f) +
-            "</option>",
-        )
-        .join("");
+      const daily = files.filter((f) => f !== "crash.log").reverse();
+      const opt = (f, label) =>
+        '<option value="/logs/' +
+        encodeURIComponent(f) +
+        '">' +
+        escapeHTML(label || f) +
+        "</option>";
+      let html = '<optgroup label="App logs">' + daily.map((f) => opt(f)).join("") + "</optgroup>";
+      if (files.includes("crash.log")) {
+        html +=
+          '<optgroup label="Supervisor">' +
+          opt("crash.log", "Crash log") +
+          "</optgroup>";
+      }
+      sel.innerHTML = html;
       viewLogFile(sel.value);
     } catch (e) {
       sel.innerHTML = '<option value="">Error</option>';
