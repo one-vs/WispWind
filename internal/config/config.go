@@ -42,6 +42,9 @@ type Config struct {
 	MaxRecordSeconds int
 	// WaveTheme is the widget wave color scheme: green, purple, yellow, red, blue.
 	WaveTheme string
+	// SaveRecordings keeps a WAV backup of each dictation before it is sent
+	// to the STT API, so a failed transcription never loses the take.
+	SaveRecordings bool
 }
 
 type CostRates struct {
@@ -141,6 +144,7 @@ func Load(database *db.DB) *Config {
 	if waveTheme == "" {
 		waveTheme = "green"
 	}
+	saveRecordings := !strings.EqualFold(getSetting(database, "SAVE_RECORDINGS", "SAVE_RECORDINGS"), "false")
 
 	costRates := defaultCostRates(model)
 	costRates.STTAudioInputPer1M = getFloatSetting(database, "COST_STT_AUDIO_INPUT_USD_PER_1M", costRates.STTAudioInputPer1M)
@@ -170,6 +174,7 @@ func Load(database *db.DB) *Config {
 		database.SaveSetting(ctx, "PASTE_MODE", pasteMode)
 		database.SaveSetting(ctx, "MAX_RECORD_SECONDS", strconv.Itoa(maxRecordSeconds))
 		database.SaveSetting(ctx, "WAVE_THEME", waveTheme)
+		database.SaveSetting(ctx, "SAVE_RECORDINGS", strconv.FormatBool(saveRecordings))
 
 		// COST_* settings are intentionally NOT persisted here: a stored
 		// value is treated as an explicit user override, otherwise the
@@ -197,6 +202,7 @@ func Load(database *db.DB) *Config {
 		PasteMode:        pasteMode,
 		MaxRecordSeconds: maxRecordSeconds,
 		WaveTheme:        waveTheme,
+		SaveRecordings:   saveRecordings,
 	}
 }
 
@@ -270,6 +276,7 @@ func ReloadHot(database *db.DB, current *Config) *Config {
 	if v := strings.ToLower(getSetting(database, "WAVE_THEME", "WAVE_THEME")); v != "" {
 		next.WaveTheme = v
 	}
+	next.SaveRecordings = !strings.EqualFold(getSetting(database, "SAVE_RECORDINGS", "SAVE_RECORDINGS"), "false")
 
 	rates := defaultCostRates(next.Model)
 	rates.STTAudioInputPer1M = getFloatOr(database, "COST_STT_AUDIO_INPUT_USD_PER_1M", rates.STTAudioInputPer1M)

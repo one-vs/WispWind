@@ -3,6 +3,7 @@ package audio
 import (
 	"bytes"
 	"encoding/binary"
+	"log"
 	"math"
 	"sync"
 
@@ -36,6 +37,15 @@ func StartRecording(cb func([]int16)) error {
 
 	if recording {
 		return nil
+	}
+
+	// PortAudio caches the device list at Initialize time: if the default
+	// microphone changed since startup (headset plugged in, Bluetooth
+	// reconnect), OpenDefaultStream would keep opening the stale device and
+	// record pure silence. Re-enumerate devices before every recording.
+	portaudio.Terminate()
+	if err := portaudio.Initialize(); err != nil {
+		return err
 	}
 
 	onAudio = cb
@@ -101,6 +111,12 @@ func StopRecording() []byte {
 
 	if len(buffer) == 0 {
 		return nil
+	}
+
+	// Warn when the whole take was silence — almost always a dead/wrong
+	// input device rather than an actually quiet user.
+	if rms := CalculateRMS(buffer); rms < 0.001 {
+		log.Printf("Audio warning: recording is silent (RMS %.5f) — check the default microphone", rms)
 	}
 
 	return createWAV(buffer, SampleRate)

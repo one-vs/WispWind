@@ -320,6 +320,7 @@
     RESTORE_CLIPBOARD: "Restore Clipboard After Paste",
     SMART_SPACING: "Smart Leading Space",
     MAX_RECORD_SECONDS: "Max Recording (seconds)",
+    SAVE_RECORDINGS: "Save WAV Backups (7 days)",
     COST_STT_AUDIO_INPUT_USD_PER_1M: "STT Audio Input ($/1M)",
     COST_STT_AUDIO_USD_PER_MINUTE: "STT Audio ($/minute)",
     COST_STT_TEXT_INPUT_USD_PER_1M: "STT Text Input ($/1M)",
@@ -347,6 +348,7 @@
     DISABLE_LLM: { false: "Enabled", true: "Disabled" },
     RESTORE_CLIPBOARD: { true: "Enabled", false: "Disabled" },
     SMART_SPACING: { true: "Enabled", false: "Disabled" },
+    SAVE_RECORDINGS: { true: "Enabled", false: "Disabled" },
   };
   const TEXTAREA_KEYS = new Set(["STT_PROMPT", "PROMPT"]);
 
@@ -396,6 +398,7 @@
         "RESTORE_CLIPBOARD",
         "SMART_SPACING",
         "MAX_RECORD_SECONDS",
+        "SAVE_RECORDINGS",
       ],
     },
     {

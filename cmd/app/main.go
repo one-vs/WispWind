@@ -134,6 +134,7 @@ func main() {
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigs
+		markCleanExit()
 		systray.Quit()
 	}()
 
@@ -270,12 +271,14 @@ func onReady(ctx context.Context, cfgHolder *config.Holder, database *db.DB, sto
 	go func() {
 		for wavData := range processor {
 			transcribeStarted := time.Now()
-			if path, err := store.SaveRecording(wavData); err != nil {
-				log.Printf("Failed to save recording backup: %v", err)
-			} else {
-				log.Printf("Recording saved: %s", path)
-			}
 			c := cfgHolder.Get()
+			if c.SaveRecordings {
+				if path, err := store.SaveRecording(wavData); err != nil {
+					log.Printf("Failed to save recording backup: %v", err)
+				} else {
+					log.Printf("Recording saved: %s", path)
+				}
+			}
 			var apiKey string
 			if c.Provider == "deepgram" {
 				apiKey = c.DeepgramKey
@@ -490,6 +493,9 @@ func runSupervisor() {
 	_ = os.MkdirAll(logsDir, 0o755)
 	crashPath := filepath.Join(logsDir, "crash.log")
 
+	flagPath := filepath.Join(logsDir, ".clean-exit")
+	_ = os.Remove(flagPath)
+
 	var restarts []time.Time
 	for {
 		f, ferr := os.OpenFile(crashPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
@@ -502,14 +508,21 @@ func runSupervisor() {
 			cmd.Stdout = f
 		}
 		runErr := cmd.Run()
-		if ferr == nil {
-			if runErr != nil {
-				fmt.Fprintf(f, "--- child crashed %s: %v ---\n", time.Now().Format("2006-01-02 15:04:05"), runErr)
+
+		// Only an exit preceded by the clean-exit flag (Quit menu / signal)
+		// stops the supervisor. Anything else — panic OR a mysterious
+		// zero-code exit — gets logged and restarted.
+		if _, err := os.Stat(flagPath); err == nil {
+			_ = os.Remove(flagPath)
+			if ferr == nil {
+				f.Close()
 			}
-			f.Close()
+			return
 		}
-		if runErr == nil {
-			return // clean quit
+		if ferr == nil {
+			fmt.Fprintf(f, "--- child exited unexpectedly %s (err=%v), restarting ---\n",
+				time.Now().Format("2006-01-02 15:04:05"), runErr)
+			f.Close()
 		}
 		now := time.Now()
 		fresh := restarts[:0]
@@ -523,6 +536,15 @@ func runSupervisor() {
 			return // crash loop; give up
 		}
 		time.Sleep(2 * time.Second)
+	}
+}
+
+// markCleanExit tells the supervisor this shutdown is intentional and it
+// should not restart the app.
+func markCleanExit() {
+	if exe, err := os.Executable(); err == nil {
+		path := filepath.Join(filepath.Dir(exe), "logs", ".clean-exit")
+		_ = os.WriteFile(path, []byte(time.Now().Format(time.RFC3339)), 0o644)
 	}
 }
 
@@ -555,6 +577,7 @@ func setupTrayMenu(cfg *config.Config, database *db.DB, adminURL string) (*systr
 	quitItem := systray.AddMenuItem("Quit", "Exit application")
 	go func() {
 		<-quitItem.ClickedCh
+		markCleanExit()
 		systray.Quit()
 	}()
 	return usageItem, lifetimeItem, modelItem
