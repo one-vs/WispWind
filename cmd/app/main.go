@@ -7,8 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -18,6 +20,7 @@ import (
 	"wispwind/internal/config"
 	"wispwind/internal/db"
 	"wispwind/internal/focus"
+	"wispwind/internal/history"
 	"wispwind/internal/hotkey"
 	"wispwind/internal/llm"
 	"wispwind/internal/paste"
@@ -31,6 +34,14 @@ import (
 )
 
 func main() {
+	// Supervisor mode: the first process only spawns and watches the real
+	// app. A crash (non-zero exit) is logged with its full panic stack to
+	// logs/crash.log and the app is restarted automatically.
+	if os.Getenv("WISPWIND_CHILD") != "1" {
+		runSupervisor()
+		return
+	}
+
 	kernel32 := syscall.NewLazyDLL("kernel32.dll")
 	procCreateMutex := kernel32.NewProc("CreateMutexW")
 	mutexName, _ := syscall.UTF16PtrFromString("WispWind_SingleInstance_Mutex")
@@ -56,6 +67,12 @@ func main() {
 		log.Fatalf("Logger init failed: %v", err)
 	}
 
+	if migrated, err := database.MigrateCostDefaultsV2(context.Background()); err != nil {
+		log.Printf("Cost defaults migration error: %v", err)
+	} else if migrated {
+		log.Printf("Cost rates corrected: stale defaults dropped, historical STT costs recomputed")
+	}
+
 	cfg := config.Load(database)
 	cfgHolder := config.NewHolder(database, cfg)
 
@@ -73,6 +90,17 @@ func main() {
 	if err := paste.Init(); err != nil {
 		log.Fatalf("Clipboard init failed: %v", err)
 	}
+	applyPasteOptions := func(c *config.Config) {
+		paste.Configure(paste.Options{
+			SmartSpacing:     c.SmartSpacing,
+			RestoreClipboard: c.RestoreClipboard,
+			Mode:             c.PasteMode,
+		})
+	}
+	applyPasteOptions(cfg)
+	cfgHolder.OnChange(applyPasteOptions)
+
+	store.PruneRecordings(7 * 24 * time.Hour)
 
 	// Print startup info
 	apiKey := cfg.OpenAIKey
@@ -109,19 +137,21 @@ func main() {
 		systray.Quit()
 	}()
 
-	systray.Run(func() { onReady(ctx, cfgHolder, database, adminURL) }, onExit)
+	systray.Run(func() { onReady(ctx, cfgHolder, database, store, adminURL) }, onExit)
 }
 
-func onReady(ctx context.Context, cfgHolder *config.Holder, database *db.DB, adminURL string) {
+func onReady(ctx context.Context, cfgHolder *config.Holder, database *db.DB, store *storage.Store, adminURL string) {
 	cfg := cfgHolder.Get()
 	bootSTTMode := cfg.STTMode
 	systray.SetTitle("VoiceTyping")
 	systray.SetTooltip("Voice dictation")
 	setTrayRecording(false)
 	widget.Start()
+	widget.SetTheme(cfg.WaveTheme)
 	usageItem, lifetimeItem, modelItem := setupTrayMenu(cfg, database, adminURL)
 	cfgHolder.OnChange(func(c *config.Config) {
 		modelItem.SetTitle(fmt.Sprintf("Model: %s", c.Model))
+		widget.SetTheme(c.WaveTheme)
 	})
 
 	type transcriptResult struct {
@@ -134,6 +164,24 @@ func onReady(ctx context.Context, cfgHolder *config.Holder, database *db.DB, adm
 	var targetMu sync.Mutex
 	var targetWindow focus.Handle
 
+	// pendingFinal guards the realtime path: if no final transcript arrives
+	// within the watchdog window after Commit, the widget is force-hidden so
+	// it never gets stuck in "processing".
+	var pendingFinal atomic.Bool
+
+	// maxRecTimer force-stops a recording that runs past the configured limit
+	// (e.g. a stuck toggle).
+	var maxRecMu sync.Mutex
+	var maxRecTimer *time.Timer
+	stopMaxRecTimer := func() {
+		maxRecMu.Lock()
+		if maxRecTimer != nil {
+			maxRecTimer.Stop()
+			maxRecTimer = nil
+		}
+		maxRecMu.Unlock()
+	}
+
 	// Pipeline (Result -> LLM -> Paste)
 	go func() {
 		liveWriter := paste.NewLiveWriter()
@@ -142,6 +190,9 @@ func onReady(ctx context.Context, cfgHolder *config.Holder, database *db.DB, adm
 		var lastLiveAt time.Time
 
 		for text := range resultChan {
+			if text.Final {
+				pendingFinal.Store(false)
+			}
 			if strings.TrimSpace(text.Text) == "" {
 				if text.Final {
 					widget.Hide()
@@ -190,15 +241,16 @@ func onReady(ctx context.Context, cfgHolder *config.Holder, database *db.DB, adm
 			}
 
 			pasteMu.Lock()
-			widget.Hide()
 			setTrayRecording(false)
 			targetMu.Lock()
 			tw := targetWindow
 			targetMu.Unlock()
-			focus.Restore(tw)
-			time.Sleep(120 * time.Millisecond)
+			if !focus.RestoreAndWait(tw, 600*time.Millisecond) {
+				log.Printf("Focus restore timed out, pasting into current window")
+			}
+			time.Sleep(50 * time.Millisecond)
 			if text.Live {
-				liveWriter.Replace(finalText)
+				liveWriter.ReplaceFinal(finalText)
 				lastLiveText = finalText
 				lastLiveAt = time.Time{}
 				liveWriter.Forget()
@@ -206,6 +258,10 @@ func onReady(ctx context.Context, cfgHolder *config.Holder, database *db.DB, adm
 			} else {
 				paste.PasteTextSmart(finalText)
 			}
+			// Flash a checkmark so the user sees the text landed.
+			widget.SetStatus("done")
+			time.Sleep(450 * time.Millisecond)
+			widget.Hide()
 			pasteMu.Unlock()
 		}
 	}()
@@ -214,6 +270,11 @@ func onReady(ctx context.Context, cfgHolder *config.Holder, database *db.DB, adm
 	go func() {
 		for wavData := range processor {
 			transcribeStarted := time.Now()
+			if path, err := store.SaveRecording(wavData); err != nil {
+				log.Printf("Failed to save recording backup: %v", err)
+			} else {
+				log.Printf("Recording saved: %s", path)
+			}
 			c := cfgHolder.Get()
 			var apiKey string
 			if c.Provider == "deepgram" {
@@ -253,9 +314,10 @@ func onReady(ctx context.Context, cfgHolder *config.Holder, database *db.DB, adm
 	// Listen for Global Hotkeys
 	go hotkey.Listen(
 		hotkey.Config{
-			Mode:  cfg.HotkeyMode,
-			Start: cfg.HotkeyStart,
-			Stop:  cfg.HotkeyStop,
+			Mode:    cfg.HotkeyMode,
+			Start:   cfg.HotkeyStart,
+			Stop:    cfg.HotkeyStop,
+			History: cfg.HotkeyHistory,
 		},
 		func() {
 			setTrayRecording(true)
@@ -263,6 +325,12 @@ func onReady(ctx context.Context, cfgHolder *config.Holder, database *db.DB, adm
 			targetWindow = focus.Current()
 			targetMu.Unlock()
 			widget.Show("listening")
+			maxRecMu.Lock()
+			maxRecTimer = time.AfterFunc(time.Duration(cfg.MaxRecordSeconds)*time.Second, func() {
+				log.Printf("Recording exceeded %ds limit, force-stopping", cfg.MaxRecordSeconds)
+				hotkey.ForceStop()
+			})
+			maxRecMu.Unlock()
 			if bootSTTMode == "realtime" {
 				if err := stt.ValidateRealtimeSampleRate(audio.SampleRate); err != nil {
 					log.Printf("Realtime STT Config Error: %v", err)
@@ -331,6 +399,7 @@ func onReady(ctx context.Context, cfgHolder *config.Holder, database *db.DB, adm
 		},
 		func() {
 			fmt.Println() // New line after recording stops
+			stopMaxRecTimer()
 			widget.SetStatus("processing")
 			if bootSTTMode == "realtime" {
 				rtMu.Lock()
@@ -340,10 +409,21 @@ func onReady(ctx context.Context, cfgHolder *config.Holder, database *db.DB, adm
 						log.Printf("Realtime commit error: %v", err)
 						widget.Hide()
 						setTrayRecording(false)
+					} else {
+						// Watchdog: never leave the widget stuck in
+						// "processing" if the final transcript never arrives.
+						pendingFinal.Store(true)
+						time.AfterFunc(12*time.Second, func() {
+							if pendingFinal.CompareAndSwap(true, false) {
+								log.Printf("Realtime final transcript timed out")
+								widget.Hide()
+								setTrayRecording(false)
+							}
+						})
 					}
 					sessionToClose := rtSession
 					go func() {
-						time.Sleep(8 * time.Second)
+						time.Sleep(15 * time.Second)
 						sessionToClose.Close()
 					}()
 					rtSession = nil
@@ -364,6 +444,7 @@ func onReady(ctx context.Context, cfgHolder *config.Holder, database *db.DB, adm
 		},
 		func() {
 			fmt.Println()
+			stopMaxRecTimer()
 			if bootSTTMode == "realtime" {
 				rtMu.Lock()
 				if rtSession != nil {
@@ -380,12 +461,75 @@ func onReady(ctx context.Context, cfgHolder *config.Holder, database *db.DB, adm
 			widget.Hide()
 			setTrayRecording(false)
 		},
+		func() {
+			records, err := database.GetRecentHistory(context.Background(), 8)
+			if err != nil {
+				log.Printf("History query error: %v", err)
+				return
+			}
+			items := make([]history.Item, 0, len(records))
+			for _, r := range records {
+				items = append(items, history.Item{Time: r.Time, Text: r.Text})
+			}
+			history.Toggle(items)
+		},
 	)
 }
 
+// runSupervisor relaunches the binary as a child with WISPWIND_CHILD=1 and
+// its stderr piped to logs/crash.log, so Go panic traces are captured even in
+// a -H=windowsgui build. Clean exits stop the loop; crashes restart the app
+// (up to 5 times per 10 minutes).
+func runSupervisor() {
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	dir := filepath.Dir(exe)
+	logsDir := filepath.Join(dir, "logs")
+	_ = os.MkdirAll(logsDir, 0o755)
+	crashPath := filepath.Join(logsDir, "crash.log")
+
+	var restarts []time.Time
+	for {
+		f, ferr := os.OpenFile(crashPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		cmd := exec.Command(exe)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "WISPWIND_CHILD=1")
+		if ferr == nil {
+			fmt.Fprintf(f, "\n--- child start %s ---\n", time.Now().Format("2006-01-02 15:04:05"))
+			cmd.Stderr = f
+			cmd.Stdout = f
+		}
+		runErr := cmd.Run()
+		if ferr == nil {
+			if runErr != nil {
+				fmt.Fprintf(f, "--- child crashed %s: %v ---\n", time.Now().Format("2006-01-02 15:04:05"), runErr)
+			}
+			f.Close()
+		}
+		if runErr == nil {
+			return // clean quit
+		}
+		now := time.Now()
+		fresh := restarts[:0]
+		for _, t := range restarts {
+			if now.Sub(t) < 10*time.Minute {
+				fresh = append(fresh, t)
+			}
+		}
+		restarts = append(fresh, now)
+		if len(restarts) > 5 {
+			return // crash loop; give up
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
 func onExit() {
+	// systray.Run returns after this, letting main's defers (DB close,
+	// portaudio terminate, log file close) run normally.
 	log.Println("Exiting application...")
-	os.Exit(0)
 }
 
 func setupTrayMenu(cfg *config.Config, database *db.DB, adminURL string) (*systray.MenuItem, *systray.MenuItem, *systray.MenuItem) {
@@ -550,5 +694,5 @@ func llmStatus(disabled bool) string {
 	if disabled {
 		return "Disabled"
 	}
-	return "Enabled (gpt-4o)"
+	return "Enabled (gpt-4o-mini)"
 }

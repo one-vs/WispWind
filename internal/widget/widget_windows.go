@@ -1,9 +1,16 @@
 package widget
 
+// Overlay widget rendered with per-pixel alpha via UpdateLayeredWindow.
+// All drawing happens in software into a premultiplied BGRA buffer, which
+// gives antialiased rounded corners, a soft drop shadow and smooth easing
+// animations — none of which classic GDI + SetWindowRgn can do.
+
 import (
 	"fmt"
+	"log"
 	"math"
 	"runtime"
+	"runtime/debug"
 	"sync"
 	"syscall"
 	"time"
@@ -13,47 +20,107 @@ import (
 )
 
 const (
-	compactWidth  = 32
-	compactHeight = 24
-	wideWidth     = 360
-	wideHeight    = 44
+	// Content sizes at 96 DPI; scaled by the monitor DPI at show time.
+	baseCompactW = 32
+	baseCompactH = 24
+	baseWideW    = 360
+	baseWideH    = 54
+	// Transparent margin around the content that hosts the drop shadow.
+	baseMargin = 10
+
+	levelCount = 80
+
+	fadeInDuration = 140 * time.Millisecond
 )
 
 var (
-	gdi32               = syscall.NewLazyDLL("gdi32.dll")
-	user32              = syscall.NewLazyDLL("user32.dll")
-	procCreateBrush     = gdi32.NewProc("CreateSolidBrush")
-	procCreatePen       = gdi32.NewProc("CreatePen")
-	procRoundRectRgn    = gdi32.NewProc("CreateRoundRectRgn")
-	procSetWindowRgn    = user32.NewProc("SetWindowRgn")
-	procSetLayeredAttr  = user32.NewProc("SetLayeredWindowAttributes")
-	procSetWindowComp   = user32.NewProc("SetWindowCompositionAttribute")
-	procGetStockObject  = gdi32.NewProc("GetStockObject")
-	procSetDCBrushColor = gdi32.NewProc("SetDCBrushColor")
-	procSetDCPenColor   = gdi32.NewProc("SetDCPenColor")
-	procCreateCompatDC  = gdi32.NewProc("CreateCompatibleDC")
-	procCreateCompatBmp = gdi32.NewProc("CreateCompatibleBitmap")
-	procDeleteDC        = gdi32.NewProc("DeleteDC")
-	procBitBlt          = gdi32.NewProc("BitBlt")
+	user32   = syscall.NewLazyDLL("user32.dll")
+	gdi32    = syscall.NewLazyDLL("gdi32.dll")
+	shcore   = syscall.NewLazyDLL("shcore.dll")
+	kernel32 = syscall.NewLazyDLL("kernel32.dll")
+
+	procUpdateLayeredWindow = user32.NewProc("UpdateLayeredWindow")
+	procMonitorFromPoint    = user32.NewProc("MonitorFromPoint")
+	procGetMonitorInfo      = user32.NewProc("GetMonitorInfoW")
+	procSetDpiAwareness     = user32.NewProc("SetProcessDpiAwarenessContext")
+	procCreateDIBSection    = gdi32.NewProc("CreateDIBSection")
+	procGetDpiForMonitor    = shcore.NewProc("GetDpiForMonitor")
+
+	_ = kernel32
 )
 
-var overlay = &state{
-	levels: make([]float64, 80),
-	status: "idle",
+type bitmapInfoHeader struct {
+	Size          uint32
+	Width         int32
+	Height        int32
+	Planes        uint16
+	BitCount      uint16
+	Compression   uint32
+	SizeImage     uint32
+	XPelsPerMeter int32
+	YPelsPerMeter int32
+	ClrUsed       uint32
+	ClrImportant  uint32
+}
+
+type blendFunction struct {
+	BlendOp             byte
+	BlendFlags          byte
+	SourceConstantAlpha byte
+	AlphaFormat         byte
+}
+
+type size struct {
+	CX int32
+	CY int32
+}
+
+type monitorInfo struct {
+	CbSize    uint32
+	RcMonitor win.RECT
+	RcWork    win.RECT
+	DwFlags   uint32
 }
 
 type state struct {
 	mu      sync.Mutex
 	hwnd    win.HWND
-	levels  []float64
-	levelAt int
-	status  string
-	started time.Time
+	ready   chan struct{}
+	wake    chan struct{}
 	visible bool
 	wide    bool
-	width   int32
+	status  string
+	started time.Time
+	shownAt time.Time
+	scale   float64
+	width   int32 // full window size including shadow margin
 	height  int32
-	ready   chan struct{}
+
+	posX  int32
+	posY  int32
+	theme string
+
+	levels  []float64 // raw RMS ring buffer
+	levelAt int
+	amp     float64 // eased on-screen wave amplitude
+}
+
+var overlay = &state{
+	levels: make([]float64, levelCount),
+	status: "idle",
+	scale:  1,
+	theme:  "green",
+	wake:   make(chan struct{}, 1),
+}
+
+// SetTheme switches the wave color scheme (green, purple, yellow, red, blue).
+func SetTheme(name string) {
+	if _, ok := themes[name]; !ok {
+		name = "green"
+	}
+	overlay.mu.Lock()
+	overlay.theme = name
+	overlay.mu.Unlock()
 }
 
 func Start() {
@@ -69,35 +136,51 @@ func Start() {
 }
 
 func ShowIdle() {
-	Start()
-	<-overlay.ready
-	overlay.mu.Lock()
-	overlay.status = "idle"
-	overlay.visible = true
-	hwnd := overlay.hwnd
-	overlay.mu.Unlock()
-	resize(hwnd, compactWidth, compactHeight, false)
-	moveNearCursor(hwnd)
-	win.ShowWindow(hwnd, win.SW_SHOWNOACTIVATE)
-	redraw(hwnd)
+	show("idle", false)
 }
 
 func Show(status string) {
+	show(status, true)
+}
+
+func show(status string, wide bool) {
 	Start()
 	<-overlay.ready
+
+	scale := cursorScale()
+	var w, h int32
+	if wide {
+		w, h = scaled(baseWideW, scale), scaled(baseWideH, scale)
+	} else {
+		w, h = scaled(baseCompactW, scale), scaled(baseCompactH, scale)
+	}
+	margin := scaled(baseMargin, scale)
+	w += margin * 2
+	h += margin * 2
+
 	overlay.mu.Lock()
 	overlay.status = status
 	overlay.started = time.Now()
+	overlay.shownAt = time.Now()
 	overlay.visible = true
+	overlay.wide = wide
+	overlay.scale = scale
+	overlay.width = w
+	overlay.height = h
 	for i := range overlay.levels {
 		overlay.levels[i] = 0
 	}
+	overlay.amp = 0
 	hwnd := overlay.hwnd
 	overlay.mu.Unlock()
-	resize(hwnd, wideWidth, wideHeight, true)
-	moveNearCursor(hwnd)
-	win.ShowWindow(hwnd, win.SW_SHOWNOACTIVATE)
-	redraw(hwnd)
+
+	x, y := positionNearCursor(w, h)
+	overlay.mu.Lock()
+	overlay.posX, overlay.posY = x, y
+	overlay.mu.Unlock()
+	win.SetWindowPos(hwnd, win.HWND_TOPMOST, x, y, w, h,
+		win.SWP_NOACTIVATE|win.SWP_SHOWWINDOW)
+	poke()
 }
 
 func Hide() {
@@ -111,59 +194,11 @@ func Hide() {
 	win.ShowWindow(hwnd, win.SW_HIDE)
 }
 
-// moveNearCursor positions the overlay just below the mouse cursor,
-// keeping it within the virtual screen bounds (all monitors).
-func moveNearCursor(hwnd win.HWND) {
-	if hwnd == 0 {
-		return
-	}
-	var pt win.POINT
-	if !win.GetCursorPos(&pt) {
-		return
-	}
-
-	// Virtual screen bounds (covers all monitors)
-	vx := int32(win.GetSystemMetrics(win.SM_XVIRTUALSCREEN))
-	vy := int32(win.GetSystemMetrics(win.SM_YVIRTUALSCREEN))
-	vw := int32(win.GetSystemMetrics(win.SM_CXVIRTUALSCREEN))
-	vh := int32(win.GetSystemMetrics(win.SM_CYVIRTUALSCREEN))
-
-	// Offset slightly so it doesn't cover the cursor itself
-	x := pt.X + 16
-	y := pt.Y + 16
-
-	// Clamp to virtual screen
-	var rect win.RECT
-	win.GetWindowRect(hwnd, &rect)
-	w := rect.Right - rect.Left
-	h := rect.Bottom - rect.Top
-
-	if x+w > vx+vw {
-		x = vx + vw - w - 4
-	}
-	if y+h > vy+vh {
-		y = vy + vh - h - 4
-	}
-	if x < vx {
-		x = vx + 4
-	}
-	if y < vy {
-		y = vy + 4
-	}
-
-	win.SetWindowPos(hwnd, win.HWND_TOPMOST, x, y, 0, 0,
-		win.SWP_NOACTIVATE|win.SWP_NOSIZE|win.SWP_SHOWWINDOW)
-}
-
 func SetStatus(status string) {
 	overlay.mu.Lock()
 	overlay.status = status
-	hwnd := overlay.hwnd
-	visible := overlay.visible
 	overlay.mu.Unlock()
-	if visible {
-		redraw(hwnd)
-	}
+	poke()
 }
 
 func SetLevel(level float64) {
@@ -176,17 +211,95 @@ func SetLevel(level float64) {
 	overlay.mu.Lock()
 	overlay.levels[overlay.levelAt] = level
 	overlay.levelAt = (overlay.levelAt + 1) % len(overlay.levels)
-	hwnd := overlay.hwnd
-	visible := overlay.visible
 	overlay.mu.Unlock()
-	if visible {
-		redraw(hwnd)
+}
+
+func poke() {
+	select {
+	case overlay.wake <- struct{}{}:
+	default:
 	}
+}
+
+func scaled(v int, scale float64) int32 {
+	return int32(math.Round(float64(v) * scale))
+}
+
+// cursorScale returns the DPI scale factor of the monitor under the cursor.
+func cursorScale() float64 {
+	var pt win.POINT
+	if !win.GetCursorPos(&pt) {
+		return 1
+	}
+	const monitorDefaultToNearest = 2
+	mon, _, _ := procMonitorFromPoint.Call(uintptr(pt.X), uintptr(pt.Y), monitorDefaultToNearest)
+	if mon == 0 {
+		return 1
+	}
+	if procGetDpiForMonitor.Find() != nil {
+		return 1
+	}
+	var dpiX, dpiY uint32
+	const mdtEffectiveDPI = 0
+	ret, _, _ := procGetDpiForMonitor.Call(mon, mdtEffectiveDPI,
+		uintptr(unsafe.Pointer(&dpiX)), uintptr(unsafe.Pointer(&dpiY)))
+	if ret != 0 || dpiX == 0 {
+		return 1
+	}
+	return float64(dpiX) / 96.0
+}
+
+// positionNearCursor computes a spot just below the cursor, clamped to the
+// work area of the monitor the cursor is on (not the whole virtual screen,
+// so the widget never jumps to another monitor).
+func positionNearCursor(w, h int32) (int32, int32) {
+	var pt win.POINT
+	if !win.GetCursorPos(&pt) {
+		return 100, 100
+	}
+
+	left := int32(win.GetSystemMetrics(win.SM_XVIRTUALSCREEN))
+	top := int32(win.GetSystemMetrics(win.SM_YVIRTUALSCREEN))
+	right := left + int32(win.GetSystemMetrics(win.SM_CXVIRTUALSCREEN))
+	bottom := top + int32(win.GetSystemMetrics(win.SM_CYVIRTUALSCREEN))
+
+	const monitorDefaultToNearest = 2
+	mon, _, _ := procMonitorFromPoint.Call(uintptr(pt.X), uintptr(pt.Y), monitorDefaultToNearest)
+	if mon != 0 {
+		var mi monitorInfo
+		mi.CbSize = uint32(unsafe.Sizeof(mi))
+		if ret, _, _ := procGetMonitorInfo.Call(mon, uintptr(unsafe.Pointer(&mi))); ret != 0 {
+			left, top = mi.RcWork.Left, mi.RcWork.Top
+			right, bottom = mi.RcWork.Right, mi.RcWork.Bottom
+		}
+	}
+
+	x := pt.X + 16
+	y := pt.Y + 18
+	if x+w > right {
+		x = right - w - 4
+	}
+	if y+h > bottom {
+		y = pt.Y - h - 12 // flip above the cursor
+	}
+	if x < left {
+		x = left + 4
+	}
+	if y < top {
+		y = top + 4
+	}
+	return x, y
 }
 
 func run() {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+
+	// Per-monitor v2 DPI awareness so coordinates and sizes are physical.
+	const dpiAwarenessContextPerMonitorV2 = ^uintptr(3) // (DPI_AWARENESS_CONTEXT)-4
+	if procSetDpiAwareness.Find() == nil {
+		procSetDpiAwareness.Call(dpiAwarenessContextPerMonitorV2)
+	}
 
 	className := syscall.StringToUTF16Ptr("WispWindOverlay")
 	instance := win.GetModuleHandle(nil)
@@ -196,44 +309,25 @@ func run() {
 		CbSize:        uint32(unsafe.Sizeof(win.WNDCLASSEX{})),
 		LpfnWndProc:   wndProc,
 		HInstance:     instance,
-		HbrBackground: win.HBRUSH(createBrush(rgb(24, 24, 26))),
 		LpszClassName: className,
 	}
 	win.RegisterClassEx(&wc)
 
-	x := (win.GetSystemMetrics(win.SM_CXSCREEN) - compactWidth) / 2
-	y := win.GetSystemMetrics(win.SM_CYSCREEN) - compactHeight - 88
 	hwnd := win.CreateWindowEx(
 		win.WS_EX_TOPMOST|win.WS_EX_TOOLWINDOW|win.WS_EX_LAYERED|win.WS_EX_NOACTIVATE,
 		className,
 		syscall.StringToUTF16Ptr("WispWind"),
 		win.WS_POPUP,
-		x, y, compactWidth, compactHeight,
+		0, 0, baseCompactW, baseCompactH,
 		0, 0, instance, nil,
 	)
-	setLayeredAlpha(hwnd, 235)
-	setRoundedRegion(hwnd)
 
 	overlay.mu.Lock()
 	overlay.hwnd = hwnd
-	overlay.width = compactWidth
-	overlay.height = compactHeight
 	close(overlay.ready)
 	overlay.mu.Unlock()
 
-	ticker := time.NewTicker(16 * time.Millisecond)
-	defer ticker.Stop()
-	go func() {
-		for range ticker.C {
-			overlay.mu.Lock()
-			h := overlay.hwnd
-			visible := overlay.visible
-			overlay.mu.Unlock()
-			if visible {
-				redraw(h)
-			}
-		}
-	}()
+	go renderLoop(hwnd)
 
 	var msg win.MSG
 	for win.GetMessage(&msg, 0, 0, 0) != 0 {
@@ -246,9 +340,6 @@ func windowProc(hwnd win.HWND, msg uint32, wParam, lParam uintptr) uintptr {
 	switch msg {
 	case win.WM_NCHITTEST:
 		return win.HTCAPTION
-	case win.WM_PAINT:
-		paint(hwnd)
-		return 0
 	case win.WM_DESTROY:
 		win.PostQuitMessage(0)
 		return 0
@@ -256,295 +347,363 @@ func windowProc(hwnd win.HWND, msg uint32, wParam, lParam uintptr) uintptr {
 	return win.DefWindowProc(hwnd, msg, wParam, lParam)
 }
 
-func paint(hwnd win.HWND) {
-	var ps win.PAINTSTRUCT
-	hdc := win.BeginPaint(hwnd, &ps)
-	defer win.EndPaint(hwnd, &ps)
-
-	w := currentWidth()
-	h := currentHeight()
-
-	// Double-buffer: draw to offscreen bitmap, blit in one shot
-	memDC, _, _ := procCreateCompatDC.Call(uintptr(hdc))
-	if memDC == 0 {
-		return
-	}
-	defer procDeleteDC.Call(memDC)
-
-	bmp, _, _ := procCreateCompatBmp.Call(uintptr(hdc), uintptr(w), uintptr(h))
-	if bmp == 0 {
-		return
-	}
-	defer win.DeleteObject(win.HGDIOBJ(bmp))
-
-	oldBmp := win.SelectObject(win.HDC(memDC), win.HGDIOBJ(bmp))
-	defer win.SelectObject(win.HDC(memDC), oldBmp)
-
-	// Background
-	bg := createBrush(rgb(24, 24, 26))
-	oldBrush := win.SelectObject(win.HDC(memDC), win.HGDIOBJ(bg))
-	pen := createPen(rgb(24, 24, 26))
-	oldPen := win.SelectObject(win.HDC(memDC), win.HGDIOBJ(pen))
-	win.RoundRect(win.HDC(memDC), 0, 0, w+1, h+1, h, h)
-	win.SelectObject(win.HDC(memDC), oldPen)
-	win.DeleteObject(win.HGDIOBJ(pen))
-	win.SelectObject(win.HDC(memDC), oldBrush)
-	win.DeleteObject(win.HGDIOBJ(bg))
-
-	overlay.mu.Lock()
-	levels := append([]float64(nil), overlay.levels...)
-	levelAt := overlay.levelAt
-	status := overlay.status
-	elapsed := time.Since(overlay.started)
-	wide := overlay.wide
-	w = overlay.width
-	h = overlay.height
-	overlay.mu.Unlock()
-
-	win.SetBkMode(win.HDC(memDC), win.TRANSPARENT)
-	win.SetTextColor(win.HDC(memDC), win.RGB(175, 175, 175))
-	if wide {
-		if status == "processing" {
-			drawProcessingWave(win.HDC(memDC), w, h, elapsed)
-		} else {
-			drawWaveform(win.HDC(memDC), levels, levelAt, w, h)
-			win.SetTextColor(win.HDC(memDC), win.RGB(165, 165, 165))
-			drawText(win.HDC(memDC), w-44, 14, formatElapsed(elapsed))
-		}
-	} else {
-		drawIdleGlyph(win.HDC(memDC), h)
-	}
-
-	// Copy offscreen to screen
-	procBitBlt.Call(uintptr(hdc), 0, 0, uintptr(w), uintptr(h), memDC, 0, 0, 0x00CC0020) // SRCCOPY
+// frame owns the GDI resources for one window size.
+type frame struct {
+	w, h  int32
+	memDC win.HDC
+	bmp   win.HBITMAP
+	old   win.HGDIOBJ
+	bits  []byte // premultiplied BGRA, w*h*4, top-down
 }
 
-func drawWaveform(hdc win.HDC, levels []float64, levelAt int, w, h int32) {
-	// Use stock DC_BRUSH to avoid creating/destroying 50+ GDI objects per frame at 60 FPS
-	dcBrush, _, _ := procGetStockObject.Call(18) // DC_BRUSH
-	oldBrush := win.SelectObject(hdc, win.HGDIOBJ(dcBrush))
-	dcPen, _, _ := procGetStockObject.Call(19) // DC_PEN
-	oldPen := win.SelectObject(hdc, win.HGDIOBJ(dcPen))
-	defer func() {
-		win.SelectObject(hdc, oldBrush)
-		win.SelectObject(hdc, oldPen)
-	}()
+func (f *frame) release() {
+	if f.memDC != 0 {
+		win.SelectObject(f.memDC, f.old)
+		win.DeleteObject(win.HGDIOBJ(f.bmp))
+		win.DeleteDC(f.memDC)
+	}
+	*f = frame{}
+}
 
-	baseY := h / 2
-	left := int32(22)
-	right := int32(w - 66)
-	barCount := int32(52)
-	step := float64(right-left) / float64(barCount)
-	for i := int32(0); i < barCount; i++ {
-		// Fixed X mapping: newest data at the right edge, contiguous in time.
-		// Each bar stays at its screen position; only its height changes.
-		idx := (levelAt - int(barCount) + int(i) + len(levels)) % len(levels)
-		if levels[idx] < 0.008 {
+func (f *frame) ensure(w, h int32) bool {
+	if f.w == w && f.h == h && f.memDC != 0 {
+		return true
+	}
+	f.release()
+
+	screenDC := win.GetDC(0)
+	defer win.ReleaseDC(0, screenDC)
+	memDC := win.CreateCompatibleDC(screenDC)
+	if memDC == 0 {
+		return false
+	}
+
+	bmi := bitmapInfoHeader{
+		Width:    w,
+		Height:   -h, // top-down
+		Planes:   1,
+		BitCount: 32,
+	}
+	bmi.Size = uint32(unsafe.Sizeof(bmi))
+
+	var bitsPtr unsafe.Pointer
+	bmp, _, _ := procCreateDIBSection.Call(uintptr(memDC), uintptr(unsafe.Pointer(&bmi)),
+		0 /* DIB_RGB_COLORS */, uintptr(unsafe.Pointer(&bitsPtr)), 0, 0)
+	if bmp == 0 || bitsPtr == nil {
+		win.DeleteDC(memDC)
+		return false
+	}
+
+	f.w, f.h = w, h
+	f.memDC = memDC
+	f.bmp = win.HBITMAP(bmp)
+	f.old = win.SelectObject(memDC, win.HGDIOBJ(bmp))
+	f.bits = unsafe.Slice((*byte)(bitsPtr), int(w)*int(h)*4)
+	return true
+}
+
+func renderLoop(hwnd win.HWND) {
+	var f frame
+	var tr textRenderer
+	defer f.release()
+	defer tr.release()
+
+	ticker := time.NewTicker(16 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		overlay.mu.Lock()
+		visible := overlay.visible
+		overlay.mu.Unlock()
+
+		if !visible {
+			// Sleep until someone shows the widget again; no CPU burned
+			// while hidden.
+			<-overlay.wake
 			continue
 		}
-		lvl := smoothLevel(levels, idx)
-		lvl = math.Max(0.08, math.Min(1, lvl*7))
-		barH := int32(4 + lvl*22)
 
-		// Green gradient: dark green -> bright lime based on volume intensity
-		t := lvl
-		r := byte(30 + t*100)  // 30..130
-		g := byte(150 + t*105) // 150..255
-		b := byte(50 + t*50)   // 50..100
-		color := rgb(r, g, b)
-		procSetDCBrushColor.Call(uintptr(hdc), uintptr(color))
-		procSetDCPenColor.Call(uintptr(hdc), uintptr(color))
-
-		x := left + int32(float64(i)*step)
-		drawRoundBar(hdc, x, baseY-barH/2, 3, barH)
+		safeRenderFrame(hwnd, &f, &tr)
+		<-ticker.C
 	}
 }
 
-func drawIdleGlyph(hdc win.HDC, h int32) {
-	// Soft green mic icon even when idle
-	glyphBrush := createBrush(rgb(120, 220, 130))
-	oldBrush := win.SelectObject(hdc, win.HGDIOBJ(glyphBrush))
+// safeRenderFrame isolates a rendering panic to the current frame: resources
+// are reset and the app keeps running instead of dying.
+func safeRenderFrame(hwnd win.HWND, f *frame, tr *textRenderer) {
 	defer func() {
-		win.SelectObject(hdc, oldBrush)
-		win.DeleteObject(win.HGDIOBJ(glyphBrush))
+		if r := recover(); r != nil {
+			log.Printf("widget render panic (frame skipped): %v\n%s", r, debug.Stack())
+			f.release()
+			tr.release()
+		}
 	}()
-
-	baseY := h / 2
-	heights := []int32{6, 12, 6}
-	for i, barH := range heights {
-		x := int32(10 + i*5)
-		win.Rectangle_(hdc, x, baseY-barH/2, x+2, baseY+barH/2)
-	}
+	renderFrame(hwnd, f, tr)
 }
 
-func drawProcessingWave(hdc win.HDC, w, h int32, elapsed time.Duration) {
-	dcBrush, _, _ := procGetStockObject.Call(18) // DC_BRUSH
-	oldBrush := win.SelectObject(hdc, win.HGDIOBJ(dcBrush))
-	dcPen, _, _ := procGetStockObject.Call(19) // DC_PEN
-	oldPen := win.SelectObject(hdc, win.HGDIOBJ(dcPen))
-	defer func() {
-		win.SelectObject(hdc, oldBrush)
-		win.SelectObject(hdc, oldPen)
-	}()
-
-	baseY := h / 2
-	left := int32(26)
-	right := int32(w - 26)
-	barCount := int32(48)
-	step := float64(right-left) / float64(barCount)
-	phase := elapsed.Seconds() * 4.2
-	for i := int32(0); i < barCount; i++ {
-		x := left + int32(float64(i)*step)
-		t := float64(i)*0.36 - phase
-		lvl := 0.18 + 0.82*(math.Sin(t)+1)/2
-		envelope := math.Sin(float64(i) / float64(barCount-1) * math.Pi)
-		barH := int32(4 + lvl*envelope*24)
-
-		// Gentle green pulse for processing
-		pulse := 0.5 + 0.5*math.Sin(t*0.7)
-		r := byte(40 + pulse*80)  // 40..120
-		g := byte(180 + pulse*75) // 180..255
-		b := byte(60 + pulse*40)  // 60..100
-		color := rgb(r, g, b)
-		procSetDCBrushColor.Call(uintptr(hdc), uintptr(color))
-		procSetDCPenColor.Call(uintptr(hdc), uintptr(color))
-
-		drawRoundBar(hdc, x, baseY-barH/2, 3, barH)
-	}
-}
-
-func smoothLevel(levels []float64, idx int) float64 {
-	prev := levels[(idx-1+len(levels))%len(levels)]
-	curr := levels[idx]
-	next := levels[(idx+1)%len(levels)]
-	return prev*0.25 + curr*0.5 + next*0.25
-}
-
-func drawRoundBar(hdc win.HDC, x, y, w, h int32) {
-	if h < w {
-		h = w
-	}
-	win.RoundRect(hdc, x, y, x+w, y+h, w, w)
-}
-
-func drawText(hdc win.HDC, x, y int32, text string) {
-	u := syscall.StringToUTF16(text)
-	if len(u) == 0 {
-		return
-	}
-	win.TextOut(hdc, x, y, &u[0], int32(len(u)-1))
-}
-
-func formatElapsed(d time.Duration) string {
-	seconds := int(d.Seconds())
-	return fmt.Sprintf("%d:%02d", seconds/60, seconds%60)
-}
-
-func redraw(hwnd win.HWND) {
-	if hwnd == 0 {
-		return
-	}
-	win.InvalidateRect(hwnd, nil, false)
-}
-
-func setRoundedRegion(hwnd win.HWND) {
+func renderFrame(hwnd win.HWND, f *frame, tr *textRenderer) {
 	overlay.mu.Lock()
-	w := overlay.width
-	h := overlay.height
-	if w == 0 {
-		w = compactWidth
+	w, h := overlay.width, overlay.height
+	wide := overlay.wide
+	status := overlay.status
+	elapsed := time.Since(overlay.started)
+	sinceShow := time.Since(overlay.shownAt)
+	scale := overlay.scale
+	th, ok := themes[overlay.theme]
+	if !ok {
+		th = themes["green"]
 	}
-	if h == 0 {
-		h = compactHeight
+	// Wave amplitude follows the average of the last few RMS samples with
+	// an asymmetric ease: fast attack, slower decay — like Siri.
+	var sum float64
+	const recent = 5
+	for i := 0; i < recent; i++ {
+		idx := (overlay.levelAt - 1 - i + len(overlay.levels)*2) % len(overlay.levels)
+		sum += overlay.levels[idx]
 	}
-	overlay.mu.Unlock()
-	rgn, _, _ := procRoundRectRgn.Call(0, 0, uintptr(w+1), uintptr(h+1), uintptr(h), uintptr(h))
-	if rgn != 0 {
-		procSetWindowRgn.Call(uintptr(hwnd), rgn, 1)
+	target := math.Min(1, sum/recent*8)
+	k := 0.20 // decay
+	if target > overlay.amp {
+		k = 0.45 // attack
 	}
-}
-
-func resize(hwnd win.HWND, w, h int32, wide bool) {
-	if hwnd == 0 {
-		return
-	}
-	overlay.mu.Lock()
-	if overlay.width == w && overlay.height == h && overlay.wide == wide {
-		overlay.mu.Unlock()
-		return
-	}
-	overlay.width = w
-	overlay.height = h
-	overlay.wide = wide
+	overlay.amp += (target - overlay.amp) * k
+	amp := overlay.amp
 	overlay.mu.Unlock()
 
-	var rect win.RECT
-	win.GetWindowRect(hwnd, &rect)
-	win.SetWindowPos(hwnd, win.HWND_TOPMOST, rect.Left, rect.Top, w, h, win.SWP_NOACTIVATE|win.SWP_SHOWWINDOW)
-	setRoundedRegion(hwnd)
-}
-
-func currentWidth() int32 {
-	overlay.mu.Lock()
-	defer overlay.mu.Unlock()
-	if overlay.width == 0 {
-		return compactWidth
+	if w <= 0 || h <= 0 || !f.ensure(w, h) {
+		return
 	}
-	return overlay.width
-}
 
-func currentHeight() int32 {
-	overlay.mu.Lock()
-	defer overlay.mu.Unlock()
-	if overlay.height == 0 {
-		return compactHeight
+	c := newCanvas(f.bits, int(w), int(h))
+	c.clear()
+
+	margin := float64(scaled(baseMargin, scale))
+	cw := float64(w) - margin*2
+	ch := float64(h) - margin*2
+	radius := ch / 2
+
+	// Solid translucent pill with a soft drop shadow and a subtle top
+	// highlight. (Screen-capture blur was tried and disabled: recapturing
+	// the desktop behind the widget was unreliable.)
+	c.shadowRoundRect(margin, margin+1.5, cw, ch, radius, 4*scale, 55)
+	c.fillRoundRect(margin, margin, cw, ch, radius, 24, 24, 27, 240)
+	c.fillRoundRect(margin, margin, cw, ch/2.2, radius, 255, 255, 255, 10)
+
+	switch {
+	case wide && status == "processing":
+		drawProcessingDots(c, margin, cw, ch, elapsed, scale, th)
+	case wide && status == "done":
+		drawDone(c, margin, cw, ch, scale, th)
+	case wide:
+		drawSiriWave(c, margin, cw, ch, elapsed, scale, amp, th)
+		seconds := fmt.Sprintf("%d", int(elapsed.Seconds()))
+		tr.draw(c, seconds, margin+cw-22*scale, margin+ch/2,
+			int32(math.Round(15*scale)), 150, 150, 156, 0.62)
+	default:
+		drawIdle(c, margin, ch, scale, th)
 	}
-	return overlay.height
-}
 
-func setLayeredAlpha(hwnd win.HWND, alpha byte) {
-	const lwaAlpha = 0x2
-	procSetLayeredAttr.Call(uintptr(hwnd), 0, uintptr(alpha), lwaAlpha)
-}
-
-func setBlurBehind(hwnd win.HWND) {
-	// Undocumented but stable Windows 10/11 API for acrylic/blur effect
-	type accentPolicy struct {
-		AccentState   uint32
-		AccentFlags   uint32
-		GradientColor uint32
-		AnimationId   uint32
+	// Fade-in via the constant-alpha channel of the blend function.
+	alpha := byte(255)
+	if sinceShow < fadeInDuration {
+		alpha = byte(255 * float64(sinceShow) / float64(fadeInDuration))
 	}
-	type wndCompData struct {
-		Attrib uint32
-		PVData unsafe.Pointer
-		CbData uint32
+
+	blend := blendFunction{
+		BlendOp:             0, // AC_SRC_OVER
+		SourceConstantAlpha: alpha,
+		AlphaFormat:         1, // AC_SRC_ALPHA
 	}
-	const wcaAccentPolicy = 19
-	const accentEnableBlurBehind = 3
-	accent := accentPolicy{
-		AccentState:   accentEnableBlurBehind,
-		GradientColor: 0x80202020, // dark grey tint (AABBGGRR)
-	}
-	data := wndCompData{
-		Attrib: wcaAccentPolicy,
-		PVData: unsafe.Pointer(&accent),
-		CbData: uint32(unsafe.Sizeof(accent)),
-	}
-	procSetWindowComp.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&data)))
+	sz := size{CX: w, CY: h}
+	var srcPt win.POINT
+	const ulwAlpha = 2
+	procUpdateLayeredWindow.Call(uintptr(hwnd), 0, 0,
+		uintptr(unsafe.Pointer(&sz)), uintptr(f.memDC),
+		uintptr(unsafe.Pointer(&srcPt)), 0,
+		uintptr(unsafe.Pointer(&blend)), ulwAlpha)
 }
 
-func createBrush(color uint32) win.HBRUSH {
-	ret, _, _ := procCreateBrush.Call(uintptr(color))
-	return win.HBRUSH(ret)
+type rgbColor struct{ r, g, b byte }
+
+// theme defines the three wave layer colors (bright core → deep) plus an
+// accent used for dots, checkmark and the idle glyph.
+type themeColors struct {
+	layers [3]rgbColor
+	accent rgbColor
 }
 
-func createPen(color uint32) win.HPEN {
-	const psSolid = 0
-	ret, _, _ := procCreatePen.Call(psSolid, 1, uintptr(color))
-	return win.HPEN(ret)
+var themes = map[string]themeColors{
+	"green": {
+		layers: [3]rgbColor{{170, 255, 140}, {70, 220, 120}, {50, 190, 160}},
+		accent: rgbColor{120, 230, 140},
+	},
+	"purple": {
+		layers: [3]rgbColor{{215, 160, 255}, {160, 100, 245}, {110, 80, 210}},
+		accent: rgbColor{190, 130, 255},
+	},
+	"yellow": {
+		layers: [3]rgbColor{{255, 230, 130}, {250, 185, 70}, {230, 140, 50}},
+		accent: rgbColor{255, 205, 90},
+	},
+	"red": {
+		layers: [3]rgbColor{{255, 140, 130}, {245, 85, 95}, {205, 55, 75}},
+		accent: rgbColor{255, 120, 120},
+	},
+	"blue": {
+		layers: [3]rgbColor{{140, 200, 255}, {80, 150, 245}, {60, 110, 205}},
+		accent: rgbColor{120, 180, 255},
+	},
 }
 
-func rgb(r, g, b byte) uint32 {
-	return uint32(r) | uint32(g)<<8 | uint32(b)<<16
+// waveShape holds the motion parameters of one layer; colors come from the
+// active theme.
+type waveShape struct {
+	freq  float64 // horizontal wavelength multiplier
+	speed float64 // phase animation speed
+	phase float64 // phase offset
+	amp   float64 // amplitude relative to the master amplitude
+	alpha float64
+}
+
+var waveShapes = []waveShape{
+	{freq: 2.4, speed: 4.6, phase: 0.0, amp: 1.00, alpha: 0.92},
+	{freq: 3.1, speed: 3.4, phase: 1.9, amp: 0.88, alpha: 0.62},
+	{freq: 1.7, speed: 5.6, phase: 4.1, amp: 0.76, alpha: 0.52},
+	{freq: 2.8, speed: 2.7, phase: 2.6, amp: 0.66, alpha: 0.45},
+	{freq: 2.1, speed: 5.1, phase: 5.3, amp: 0.58, alpha: 0.40},
+	{freq: 3.5, speed: 3.9, phase: 0.9, amp: 0.50, alpha: 0.34},
+	{freq: 1.4, speed: 4.3, phase: 3.4, amp: 0.44, alpha: 0.30},
+	{freq: 2.6, speed: 6.0, phase: 1.3, amp: 0.38, alpha: 0.26},
+}
+
+// layerColor interpolates across the theme's three gradient stops so any
+// number of wave layers gets a smooth bright→deep color ramp.
+func layerColor(th themeColors, i, n int) rgbColor {
+	if n <= 1 {
+		return th.layers[0]
+	}
+	t := float64(i) / float64(n-1) * 2 // 0..2 across 3 stops
+	k := int(t)
+	if k >= 2 {
+		return th.layers[2]
+	}
+	f := t - float64(k)
+	a, b := th.layers[k], th.layers[k+1]
+	return rgbColor{
+		r: byte(float64(a.r) + (float64(b.r)-float64(a.r))*f),
+		g: byte(float64(a.g) + (float64(b.g)-float64(a.g))*f),
+		b: byte(float64(a.b) + (float64(b.b)-float64(a.b))*f),
+	}
+}
+
+// drawSiriWave renders overlapping sine waves whose amplitude follows the
+// voice level, with a soft glow pass under a crisp core stroke.
+func drawSiriWave(c *canvas, margin, cw, ch float64, elapsed time.Duration, scale float64, amp float64, th themeColors) {
+	baseY := margin + ch/2
+	left := margin + 16*scale
+	right := margin + cw - 54*scale
+	width := right - left
+	if width <= 0 {
+		return
+	}
+
+	// Keep a subtle breathing motion even in silence.
+	amp = 0.08 + 0.92*math.Max(0, math.Min(1, amp))
+	maxH := ch/2 - 2.5*scale
+	t := elapsed.Seconds()
+
+	for li := len(waveShapes) - 1; li >= 0; li-- {
+		l := waveShapes[li]
+		col := layerColor(th, li, len(waveShapes))
+		prevY := 0.0
+		for xi := 0; xi <= int(width); xi++ {
+			u := float64(xi) / width // 0..1 across the wave area
+			envelope := math.Pow(math.Sin(u*math.Pi), 1.15)
+			// A touch of per-layer amplitude modulation so lobes drift.
+			mod := 0.72 + 0.28*math.Sin(u*5.1+t*l.speed*0.6+l.phase*2.1)
+			y := amp * l.amp * envelope * mod * maxH *
+				math.Sin(u*math.Pi*2*l.freq+t*l.speed+l.phase)
+			if xi == 0 {
+				prevY = y
+			}
+			x := left + float64(xi)
+			// Fade both passes with the local swing: near the baseline the
+			// three layers overlap, and full-strength glow there melts into
+			// one fat bright line.
+			mag := math.Min(1, math.Abs(y)/(4*scale))
+			if glowA := l.alpha * 0.22 * mag; glowA > 0.01 {
+				drawWaveSegment(c, x, baseY+prevY, baseY+y, 3.4*scale, col.r, col.g, col.b, glowA)
+			}
+			coreA := l.alpha * (0.25 + 0.75*mag)
+			drawWaveSegment(c, x, baseY+prevY, baseY+y, 1.3*scale, col.r, col.g, col.b, coreA)
+			prevY = y
+		}
+	}
+}
+
+// drawProcessingDots renders three bouncing dots — shown while the transcript
+// is being processed (STT/LLM round-trip).
+func drawProcessingDots(c *canvas, margin, cw, ch float64, elapsed time.Duration, scale float64, th themeColors) {
+	cx := margin + cw/2
+	cy := margin + ch/2
+	r := 3.4 * scale
+	gap := 13 * scale
+	t := elapsed.Seconds()
+	for i := -1; i <= 1; i++ {
+		phase := t*5.2 - float64(i+1)*0.55
+		bounce := math.Max(0, math.Sin(phase)) * 5.5 * scale
+		pulse := 0.55 + 0.45*math.Max(0, math.Sin(phase))
+		c.fillCircle(cx+float64(i)*gap, cy-bounce+2.2*scale, r, th.accent.r, th.accent.g, th.accent.b, pulse)
+	}
+}
+
+// drawDone renders a checkmark in a soft accent circle — flashed briefly
+// after the text has been inserted.
+func drawDone(c *canvas, margin, cw, ch float64, scale float64, th themeColors) {
+	cx := margin + cw/2
+	cy := margin + ch/2
+	r := 11 * scale
+	c.fillCircle(cx, cy, r, th.accent.r, th.accent.g, th.accent.b, 0.22)
+	thick := 1.6 * scale
+	c.line(cx-4.4*scale, cy+0.4*scale, cx-1.2*scale, cy+3.6*scale, thick, th.accent.r, th.accent.g, th.accent.b, 0.95)
+	c.line(cx-1.2*scale, cy+3.6*scale, cx+4.8*scale, cy-3.4*scale, thick, th.accent.r, th.accent.g, th.accent.b, 0.95)
+}
+
+// drawWaveSegment fills the vertical span between two adjacent curve points
+// with a soft-edged stroke of half-thickness th.
+func drawWaveSegment(c *canvas, x, y0, y1, th float64, r, g, b byte, alpha float64) {
+	lo := math.Min(y0, y1) - th - 1
+	hi := math.Max(y0, y1) + th + 1
+	for py := int(math.Floor(lo)); py <= int(math.Ceil(hi)); py++ {
+		fy := float64(py) + 0.5
+		var d float64
+		switch {
+		case fy < math.Min(y0, y1):
+			d = math.Min(y0, y1) - fy
+		case fy > math.Max(y0, y1):
+			d = fy - math.Max(y0, y1)
+		default:
+			d = 0
+		}
+		cov := 1 - d/th
+		if cov <= 0 {
+			continue
+		}
+		if cov > 1 {
+			cov = 1
+		}
+		cov = cov * cov * (3 - 2*cov)
+		c.blend(int(x), py, r, g, b, alpha*cov)
+	}
+}
+
+func drawIdle(c *canvas, margin, ch float64, scale float64, th themeColors) {
+	baseY := margin + ch/2
+	heights := []float64{6, 12, 6}
+	for i, bh := range heights {
+		bh *= scale
+		x := margin + (9+float64(i)*5)*scale
+		w := 2.4 * scale
+		c.fillRoundRect(x, baseY-bh/2, w, bh, w/2, th.accent.r, th.accent.g, th.accent.b, 255)
+	}
 }

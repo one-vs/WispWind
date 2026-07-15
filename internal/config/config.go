@@ -16,19 +16,32 @@ import (
 )
 
 type Config struct {
-	Provider    string
-	Model       string
-	OpenAIKey   string
-	DeepgramKey string
-	STTMode     string
-	Language    string
-	STTPrompt   string
-	Prompt      string
-	DisableLLM  bool
-	HotkeyMode  string
-	HotkeyStart string
-	HotkeyStop  string
-	CostRates   CostRates
+	Provider      string
+	Model         string
+	OpenAIKey     string
+	DeepgramKey   string
+	STTMode       string
+	Language      string
+	STTPrompt     string
+	Prompt        string
+	DisableLLM    bool
+	HotkeyMode    string
+	HotkeyStart   string
+	HotkeyStop    string
+	HotkeyHistory string
+	CostRates     CostRates
+
+	// SmartSpacing enables leading-space detection via synthetic keystrokes
+	// (has side effects in some apps; off by default).
+	SmartSpacing bool
+	// RestoreClipboard restores the previous clipboard content after pasting.
+	RestoreClipboard bool
+	// PasteMode: "clipboard" (Ctrl+V) or "type" (unicode SendInput).
+	PasteMode string
+	// MaxRecordSeconds force-stops a recording after this many seconds.
+	MaxRecordSeconds int
+	// WaveTheme is the widget wave color scheme: green, purple, yellow, red, blue.
+	WaveTheme string
 }
 
 type CostRates struct {
@@ -110,6 +123,25 @@ func Load(database *db.DB) *Config {
 	if hotkeyStop == "" {
 		hotkeyStop = "ctrl+shift+space"
 	}
+	hotkeyHistory := getSetting(database, "HOTKEY_HISTORY", "HOTKEY_HISTORY")
+	if hotkeyHistory == "" {
+		hotkeyHistory = "ctrl+space+z"
+	}
+	smartSpacing := strings.EqualFold(getSetting(database, "SMART_SPACING", "SMART_SPACING"), "true")
+	restoreClipboard := !strings.EqualFold(getSetting(database, "RESTORE_CLIPBOARD", "RESTORE_CLIPBOARD"), "false")
+	pasteMode := strings.ToLower(getSetting(database, "PASTE_MODE", "PASTE_MODE"))
+	if pasteMode != "type" {
+		pasteMode = "clipboard"
+	}
+	maxRecordSeconds := int(getFloatSetting(database, "MAX_RECORD_SECONDS", 300))
+	if maxRecordSeconds <= 0 {
+		maxRecordSeconds = 300
+	}
+	waveTheme := strings.ToLower(getSetting(database, "WAVE_THEME", "WAVE_THEME"))
+	if waveTheme == "" {
+		waveTheme = "green"
+	}
+
 	costRates := defaultCostRates(model)
 	costRates.STTAudioInputPer1M = getFloatSetting(database, "COST_STT_AUDIO_INPUT_USD_PER_1M", costRates.STTAudioInputPer1M)
 	costRates.STTAudioPerMinute = getFloatSetting(database, "COST_STT_AUDIO_USD_PER_MINUTE", costRates.STTAudioPerMinute)
@@ -132,29 +164,39 @@ func Load(database *db.DB) *Config {
 		database.SaveSetting(ctx, "HOTKEY_MODE", hotkeyMode)
 		database.SaveSetting(ctx, "HOTKEY_START", hotkeyStart)
 		database.SaveSetting(ctx, "HOTKEY_STOP", hotkeyStop)
+		database.SaveSetting(ctx, "HOTKEY_HISTORY", hotkeyHistory)
+		database.SaveSetting(ctx, "SMART_SPACING", strconv.FormatBool(smartSpacing))
+		database.SaveSetting(ctx, "RESTORE_CLIPBOARD", strconv.FormatBool(restoreClipboard))
+		database.SaveSetting(ctx, "PASTE_MODE", pasteMode)
+		database.SaveSetting(ctx, "MAX_RECORD_SECONDS", strconv.Itoa(maxRecordSeconds))
+		database.SaveSetting(ctx, "WAVE_THEME", waveTheme)
 
-		database.SaveSetting(ctx, "COST_STT_AUDIO_INPUT_USD_PER_1M", strconv.FormatFloat(costRates.STTAudioInputPer1M, 'f', -1, 64))
-		database.SaveSetting(ctx, "COST_STT_AUDIO_USD_PER_MINUTE", strconv.FormatFloat(costRates.STTAudioPerMinute, 'f', -1, 64))
-		database.SaveSetting(ctx, "COST_STT_TEXT_INPUT_USD_PER_1M", strconv.FormatFloat(costRates.STTTextInputPer1M, 'f', -1, 64))
-		database.SaveSetting(ctx, "COST_STT_OUTPUT_USD_PER_1M", strconv.FormatFloat(costRates.STTOutputPer1M, 'f', -1, 64))
-		database.SaveSetting(ctx, "COST_LLM_INPUT_USD_PER_1M", strconv.FormatFloat(costRates.LLMInputPer1M, 'f', -1, 64))
-		database.SaveSetting(ctx, "COST_LLM_OUTPUT_USD_PER_1M", strconv.FormatFloat(costRates.LLMOutputPer1M, 'f', -1, 64))
+		// COST_* settings are intentionally NOT persisted here: a stored
+		// value is treated as an explicit user override, otherwise the
+		// model-based defaults above apply (and stay updatable in code).
 	}
 
 	return &Config{
-		Provider:    provider,
-		Model:       model,
-		OpenAIKey:   openAIKey,
-		DeepgramKey: deepgramKey,
-		STTMode:     sttMode,
-		Language:    language,
-		STTPrompt:   sttPrompt,
-		Prompt:      prompt,
-		DisableLLM:  disableLLM,
-		HotkeyMode:  hotkeyMode,
-		HotkeyStart: hotkeyStart,
-		HotkeyStop:  hotkeyStop,
-		CostRates:   costRates,
+		Provider:      provider,
+		Model:         model,
+		OpenAIKey:     openAIKey,
+		DeepgramKey:   deepgramKey,
+		STTMode:       sttMode,
+		Language:      language,
+		STTPrompt:     sttPrompt,
+		Prompt:        prompt,
+		DisableLLM:    disableLLM,
+		HotkeyMode:    hotkeyMode,
+		HotkeyStart:   hotkeyStart,
+		HotkeyStop:    hotkeyStop,
+		HotkeyHistory: hotkeyHistory,
+		CostRates:     costRates,
+
+		SmartSpacing:     smartSpacing,
+		RestoreClipboard: restoreClipboard,
+		PasteMode:        pasteMode,
+		MaxRecordSeconds: maxRecordSeconds,
+		WaveTheme:        waveTheme,
 	}
 }
 
@@ -220,6 +262,14 @@ func ReloadHot(database *db.DB, current *Config) *Config {
 		next.Prompt = v
 	}
 	next.DisableLLM = strings.EqualFold(getSetting(database, "DISABLE_LLM", "DISABLE_LLM"), "true")
+	next.SmartSpacing = strings.EqualFold(getSetting(database, "SMART_SPACING", "SMART_SPACING"), "true")
+	next.RestoreClipboard = !strings.EqualFold(getSetting(database, "RESTORE_CLIPBOARD", "RESTORE_CLIPBOARD"), "false")
+	if v := strings.ToLower(getSetting(database, "PASTE_MODE", "PASTE_MODE")); v == "type" || v == "clipboard" {
+		next.PasteMode = v
+	}
+	if v := strings.ToLower(getSetting(database, "WAVE_THEME", "WAVE_THEME")); v != "" {
+		next.WaveTheme = v
+	}
 
 	rates := defaultCostRates(next.Model)
 	rates.STTAudioInputPer1M = getFloatOr(database, "COST_STT_AUDIO_INPUT_USD_PER_1M", rates.STTAudioInputPer1M)
@@ -248,12 +298,17 @@ func getFloatOr(database *db.DB, key string, fallback float64) float64 {
 func defaultCostRates(model string) CostRates {
 	switch model {
 	case "gpt-4o-mini-transcribe":
-		return CostRates{STTAudioInputPer1M: 1.25, STTAudioPerMinute: 0.003, STTTextInputPer1M: 0.15, STTOutputPer1M: 5.00}
+		return CostRates{STTAudioInputPer1M: 3.00, STTAudioPerMinute: 0.003, STTTextInputPer1M: 1.25, STTOutputPer1M: 5.00}
 	case "gpt-4o-transcribe", "gpt-4o-transcribe-diarize":
-		return CostRates{STTAudioInputPer1M: 2.50, STTAudioPerMinute: 0.006, STTTextInputPer1M: 2.50, STTOutputPer1M: 10.00}
-	default:
-		return CostRates{}
+		return CostRates{STTAudioInputPer1M: 6.00, STTAudioPerMinute: 0.006, STTTextInputPer1M: 2.50, STTOutputPer1M: 10.00}
+	case "whisper-1":
+		return CostRates{STTAudioPerMinute: 0.006}
 	}
+	// Deepgram models bill per minute of audio.
+	if strings.HasPrefix(model, "nova") {
+		return CostRates{STTAudioPerMinute: 0.0043}
+	}
+	return CostRates{}
 }
 
 func getFloatSetting(database *db.DB, key string, fallback float64) float64 {

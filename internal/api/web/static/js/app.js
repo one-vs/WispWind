@@ -314,6 +314,12 @@
     HOTKEY_MODE: "Hotkey Mode",
     HOTKEY_START: "Start Hotkey",
     HOTKEY_STOP: "Stop Hotkey",
+    HOTKEY_HISTORY: "History Panel Hotkey",
+    WAVE_THEME: "Wave Color Theme",
+    PASTE_MODE: "Paste Mode",
+    RESTORE_CLIPBOARD: "Restore Clipboard After Paste",
+    SMART_SPACING: "Smart Leading Space",
+    MAX_RECORD_SECONDS: "Max Recording (seconds)",
     COST_STT_AUDIO_INPUT_USD_PER_1M: "STT Audio Input ($/1M)",
     COST_STT_AUDIO_USD_PER_MINUTE: "STT Audio ($/minute)",
     COST_STT_TEXT_INPUT_USD_PER_1M: "STT Text Input ($/1M)",
@@ -327,6 +333,8 @@
     STT_MODE: ["batch", "realtime"],
     STT_LANGUAGE: ["auto", "ru", "en"],
     HOTKEY_MODE: ["hold", "toggle"],
+    WAVE_THEME: ["green", "purple", "yellow", "red", "blue"],
+    PASTE_MODE: ["clipboard", "type"],
     STT_MODEL: [
       "gpt-4o-mini-transcribe",
       "gpt-4o-transcribe",
@@ -335,7 +343,11 @@
     ],
   };
 
-  const TOGGLE_KEYS = { DISABLE_LLM: { false: "Enabled", true: "Disabled" } };
+  const TOGGLE_KEYS = {
+    DISABLE_LLM: { false: "Enabled", true: "Disabled" },
+    RESTORE_CLIPBOARD: { true: "Enabled", false: "Disabled" },
+    SMART_SPACING: { true: "Enabled", false: "Disabled" },
+  };
   const TEXTAREA_KEYS = new Set(["STT_PROMPT", "PROMPT"]);
 
   const TABS = [
@@ -371,7 +383,20 @@
       label: "Hotkeys",
       card: "Hotkeys",
       sub: "Bind global keyboard shortcuts.",
-      keys: ["HOTKEY_MODE", "HOTKEY_START", "HOTKEY_STOP"],
+      keys: ["HOTKEY_MODE", "HOTKEY_START", "HOTKEY_STOP", "HOTKEY_HISTORY"],
+    },
+    {
+      id: "widget",
+      label: "Widget",
+      card: "Widget & Paste",
+      sub: "Overlay appearance and text insertion behavior.",
+      keys: [
+        "WAVE_THEME",
+        "PASTE_MODE",
+        "RESTORE_CLIPBOARD",
+        "SMART_SPACING",
+        "MAX_RECORD_SECONDS",
+      ],
     },
     {
       id: "pricing",

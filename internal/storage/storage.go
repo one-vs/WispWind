@@ -46,7 +46,40 @@ func New() (*Store, error) {
 	if err := os.MkdirAll(s.UsageDir(), 0o755); err != nil {
 		return nil, err
 	}
+	if err := os.MkdirAll(s.RecordingsDir(), 0o755); err != nil {
+		return nil, err
+	}
 	return s, nil
+}
+
+// RecordingsDir holds raw WAV files saved before each transcription attempt,
+// so a failed dictation is never lost. Old files are pruned on startup.
+func (s *Store) RecordingsDir() string {
+	return filepath.Join(s.baseDir, "recordings")
+}
+
+// SaveRecording writes wavData into RecordingsDir and returns the path.
+func (s *Store) SaveRecording(wavData []byte) (string, error) {
+	path := filepath.Join(s.RecordingsDir(), time.Now().Format("2006-01-02_15-04-05.000")+".wav")
+	if err := os.WriteFile(path, wavData, 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// PruneRecordings removes recordings older than maxAge.
+func (s *Store) PruneRecordings(maxAge time.Duration) {
+	entries, err := os.ReadDir(s.RecordingsDir())
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-maxAge)
+	for _, e := range entries {
+		info, err := e.Info()
+		if err == nil && info.ModTime().Before(cutoff) {
+			_ = os.Remove(filepath.Join(s.RecordingsDir(), e.Name()))
+		}
+	}
 }
 
 func (s *Store) LogsDir() string {

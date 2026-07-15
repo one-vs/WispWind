@@ -8,15 +8,18 @@ $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
 Set-Location $repo
 
-$mingwBin = "C:\msys64\mingw64\bin"
-if (Test-Path $mingwBin) {
-    $env:PATH = "$mingwBin;$env:PATH"
-    $env:PKG_CONFIG_PATH = "C:\msys64\mingw64\lib\pkgconfig"
+$mingwRoots = @("C:\msys64\mingw64", "$env:USERPROFILE\scoop\apps\msys2\current\mingw64")
+foreach ($root in $mingwRoots) {
+    if (Test-Path "$root\bin\gcc.exe") {
+        $env:PATH = "$root\bin;$env:PATH"
+        $env:PKG_CONFIG_PATH = "$root\lib\pkgconfig"
+        break
+    }
 }
 
 $env:CGO_ENABLED = "1"
 
-$extldflags = "-static -static-libgcc -static-libstdc++ -lwinmm -lole32 -lsetupapi -luuid -lpropsys"
+$extldflags = "-static -static-libgcc -static-libstdc++ -lstdc++ -lwinmm -lole32 -lsetupapi -luuid -lpropsys"
 $ldflags = "-s -w -extldflags `"$extldflags`""
 if ($Windowed) {
     $ldflags = "-H=windowsgui $ldflags"
