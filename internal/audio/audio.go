@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"log"
 	"math"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/gordonklaus/portaudio"
@@ -21,7 +23,37 @@ var (
 	recording bool
 	onAudio   func([]int16)
 	mu        sync.Mutex
+
+	// Gain control. "auto" runs a simple AGC toward targetRMS; a number
+	// fixes the gain (legacy behavior was a hardcoded 3.0).
+	gainAuto  = true
+	fixedGain = 3.0
+	agcGain   = 3.0
 )
+
+const (
+	targetRMS  = 0.15
+	agcMinGain = 1.0
+	agcMaxGain = 10.0
+	noiseFloor = 0.004 // raw RMS below this is treated as silence, no adaptation
+	agcAttack  = 0.35  // fast when reducing gain (avoid clipping)
+	agcRelease = 0.06  // slow when raising gain
+)
+
+// SetGain configures gain handling: "auto" enables AGC, a numeric string
+// sets a fixed gain.
+func SetGain(mode string) {
+	mu.Lock()
+	defer mu.Unlock()
+	mode = strings.TrimSpace(strings.ToLower(mode))
+	if v, err := strconv.ParseFloat(mode, 64); err == nil && v > 0 {
+		gainAuto = false
+		fixedGain = math.Min(v, agcMaxGain)
+		return
+	}
+	gainAuto = true
+	agcGain = 3.0
+}
 
 func Init() error {
 	return portaudio.Initialize()
@@ -52,8 +84,6 @@ func StartRecording(cb func([]int16)) error {
 	buffer = make([]int16, 0)
 	in := make([]int16, framesPerBuffer)
 
-	const inputGain = 3.0 // Developer-only: boost mic sensitivity
-
 	var err error
 	stream, err = portaudio.OpenDefaultStream(1, 0, float64(SampleRate), len(in), func(inBuf []int16) {
 		mu.Lock()
@@ -62,8 +92,24 @@ func StartRecording(cb func([]int16)) error {
 			return
 		}
 
+		// Pick the gain: AGC adapts toward targetRMS on voiced chunks,
+		// dropping fast (to avoid clipping) and rising slowly.
+		gain := fixedGain
+		if gainAuto {
+			raw := CalculateRMS(inBuf)
+			if raw > noiseFloor {
+				desired := math.Max(agcMinGain, math.Min(agcMaxGain, targetRMS/raw))
+				k := agcRelease
+				if desired < agcGain {
+					k = agcAttack
+				}
+				agcGain += (desired - agcGain) * k
+			}
+			gain = agcGain
+		}
+
 		for i := range inBuf {
-			val := float32(inBuf[i]) * inputGain
+			val := float64(inBuf[i]) * gain
 			if val > 32767 {
 				val = 32767
 			} else if val < -32768 {

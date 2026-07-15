@@ -8,6 +8,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+
 	"wispwind/internal/db"
 	"wispwind/internal/usage"
 )
@@ -16,15 +20,17 @@ import (
 var webFS embed.FS
 
 type Server struct {
-	db         *db.DB
-	logsDir    string
-	historyDir string
-	indexHTML  []byte
-	staticFS   http.Handler
-	onReload   func()
+	db            *db.DB
+	logsDir       string
+	historyDir    string
+	recordingsDir string
+	indexHTML     []byte
+	staticFS      http.Handler
+	onReload      func()
+	transcribe    func(filename string) (string, error)
 }
 
-func Start(database *db.DB, logsDir, historyDir string, onReload func()) (string, error) {
+func Start(database *db.DB, logsDir, historyDir, recordingsDir string, onReload func(), transcribe func(string) (string, error)) (string, error) {
 	indexBytes, err := webFS.ReadFile("web/index.html")
 	if err != nil {
 		return "", fmt.Errorf("read embedded index: %w", err)
@@ -35,12 +41,14 @@ func Start(database *db.DB, logsDir, historyDir string, onReload func()) (string
 	}
 
 	s := &Server{
-		db:         database,
-		logsDir:    logsDir,
-		historyDir: historyDir,
-		indexHTML:  indexBytes,
-		staticFS:   http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))),
-		onReload:   onReload,
+		db:            database,
+		logsDir:       logsDir,
+		historyDir:    historyDir,
+		recordingsDir: recordingsDir,
+		indexHTML:     indexBytes,
+		staticFS:      http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))),
+		onReload:      onReload,
+		transcribe:    transcribe,
 	}
 	mux := http.NewServeMux()
 
@@ -52,6 +60,9 @@ func Start(database *db.DB, logsDir, historyDir string, onReload func()) (string
 	mux.HandleFunc("/api/logs", s.handleListDir(logsDir))
 	mux.HandleFunc("/api/history/dates", s.handleHistoryDates)
 	mux.HandleFunc("/api/history/by-date", s.handleHistoryByDate)
+	mux.HandleFunc("/api/recordings", s.handleRecordings)
+	mux.HandleFunc("/api/recordings/transcribe", s.handleRetranscribe)
+	mux.Handle("/recordings/", http.StripPrefix("/recordings/", http.FileServer(http.Dir(recordingsDir))))
 
 	// Serve the actual files
 	mux.Handle("/logs/", http.StripPrefix("/logs/", http.FileServer(http.Dir(logsDir))))
@@ -169,6 +180,70 @@ func (s *Server) handleAllTimeUsage(w http.ResponseWriter, r *http.Request) {
 		records = []usage.Record{}
 	}
 	json.NewEncoder(w).Encode(records)
+}
+
+type recordingInfo struct {
+	Name    string `json:"name"`
+	Size    int64  `json:"size"`
+	ModTime string `json:"mod_time"`
+}
+
+func (s *Server) handleRecordings(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	entries, err := os.ReadDir(s.recordingsDir)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	recs := []recordingInfo{}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".wav") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		recs = append(recs, recordingInfo{
+			Name:    e.Name(),
+			Size:    info.Size(),
+			ModTime: info.ModTime().Format("2006-01-02 15:04:05"),
+		})
+	}
+	sort.Slice(recs, func(i, j int) bool { return recs[i].Name > recs[j].Name })
+	json.NewEncoder(w).Encode(recs)
+}
+
+// handleRetranscribe sends a saved WAV through the STT pipeline again —
+// manual only, never automatic, so no surprise API costs.
+func (s *Server) handleRetranscribe(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.transcribe == nil {
+		http.Error(w, "transcription unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var req struct {
+		File string `json:"file"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+	// Only bare .wav filenames from the recordings dir are allowed.
+	if req.File == "" || req.File != filepath.Base(req.File) || !strings.HasSuffix(req.File, ".wav") {
+		http.Error(w, "invalid file name", http.StatusBadRequest)
+		return
+	}
+	text, err := s.transcribe(req.File)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]string{"text": text})
 }
 
 func (s *Server) handleHistoryDates(w http.ResponseWriter, r *http.Request) {

@@ -45,6 +45,8 @@ type Config struct {
 	// SaveRecordings keeps a WAV backup of each dictation before it is sent
 	// to the STT API, so a failed transcription never loses the take.
 	SaveRecordings bool
+	// MicGain is "auto" (AGC) or a fixed multiplier like "3".
+	MicGain string
 }
 
 type CostRates struct {
@@ -145,6 +147,10 @@ func Load(database *db.DB) *Config {
 		waveTheme = "green"
 	}
 	saveRecordings := !strings.EqualFold(getSetting(database, "SAVE_RECORDINGS", "SAVE_RECORDINGS"), "false")
+	micGain := strings.ToLower(getSetting(database, "MIC_GAIN", "MIC_GAIN"))
+	if micGain == "" {
+		micGain = "auto"
+	}
 
 	costRates := defaultCostRates(model)
 	costRates.STTAudioInputPer1M = getFloatSetting(database, "COST_STT_AUDIO_INPUT_USD_PER_1M", costRates.STTAudioInputPer1M)
@@ -175,6 +181,7 @@ func Load(database *db.DB) *Config {
 		database.SaveSetting(ctx, "MAX_RECORD_SECONDS", strconv.Itoa(maxRecordSeconds))
 		database.SaveSetting(ctx, "WAVE_THEME", waveTheme)
 		database.SaveSetting(ctx, "SAVE_RECORDINGS", strconv.FormatBool(saveRecordings))
+		database.SaveSetting(ctx, "MIC_GAIN", micGain)
 
 		// COST_* settings are intentionally NOT persisted here: a stored
 		// value is treated as an explicit user override, otherwise the
@@ -203,6 +210,7 @@ func Load(database *db.DB) *Config {
 		MaxRecordSeconds: maxRecordSeconds,
 		WaveTheme:        waveTheme,
 		SaveRecordings:   saveRecordings,
+		MicGain:          micGain,
 	}
 }
 
@@ -277,6 +285,9 @@ func ReloadHot(database *db.DB, current *Config) *Config {
 		next.WaveTheme = v
 	}
 	next.SaveRecordings = !strings.EqualFold(getSetting(database, "SAVE_RECORDINGS", "SAVE_RECORDINGS"), "false")
+	if v := strings.ToLower(getSetting(database, "MIC_GAIN", "MIC_GAIN")); v != "" {
+		next.MicGain = v
+	}
 
 	rates := defaultCostRates(next.Model)
 	rates.STTAudioInputPer1M = getFloatOr(database, "COST_STT_AUDIO_INPUT_USD_PER_1M", rates.STTAudioInputPer1M)

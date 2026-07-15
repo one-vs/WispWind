@@ -58,7 +58,10 @@
       .querySelector('.nav-item[data-page="' + page + '"]')
       .classList.add("active");
     if (page === "usage") loadUsage();
-    if (page === "history") loadHistoryDates();
+    if (page === "history") {
+      loadHistoryDates();
+      loadRecordings();
+    }
     if (page === "logs") loadLogFiles();
     if (page === "help") loadHelp();
   }
@@ -197,6 +200,71 @@
     }
   }
 
+  /* ---------- Recordings (WAV backups) ---------- */
+  async function loadRecordings() {
+    const tbody = document.getElementById("recordingsTableBody");
+    if (!tbody) return;
+    try {
+      const res = await fetch("/api/recordings");
+      const recs = (await res.json()) || [];
+      if (!recs.length) {
+        tbody.innerHTML =
+          '<tr><td colspan="4"><div class="empty-state">No saved recordings.</div></td></tr>';
+        return;
+      }
+      tbody.innerHTML = recs
+        .map(function (r) {
+          const kb = (r.size / 1024).toFixed(0);
+          return (
+            "<tr>" +
+            "<td>" + escapeHTML(r.mod_time) + "</td>" +
+            "<td>" + kb + " KB</td>" +
+            '<td><audio controls preload="none" style="height:30px;max-width:100%" src="/recordings/' +
+            encodeURIComponent(r.name) + '"></audio></td>' +
+            '<td class="text-right"><button type="button" class="btn btn-small" data-rec="' +
+            escapeHTML(r.name) + '">Transcribe</button></td>' +
+            "</tr>"
+          );
+        })
+        .join("");
+      tbody.querySelectorAll("button[data-rec]").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          retranscribe(btn);
+        });
+      });
+    } catch (e) {
+      tbody.innerHTML =
+        '<tr><td colspan="4"><div class="empty-state">Error loading recordings.</div></td></tr>';
+    }
+  }
+
+  async function retranscribe(btn) {
+    const file = btn.getAttribute("data-rec");
+    btn.disabled = true;
+    btn.innerText = "Working...";
+    try {
+      const res = await fetch("/api/recordings/transcribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ file: file }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      btn.innerText = "Done ✓";
+      // The result lands in history — refresh the table above.
+      loadHistoryDates();
+      alert("Transcribed:\n\n" + (data.text || "(empty)"));
+    } catch (e) {
+      btn.innerText = "Failed";
+      alert("Transcription failed: " + e.message);
+    } finally {
+      setTimeout(function () {
+        btn.disabled = false;
+        btn.innerText = "Transcribe";
+      }, 3000);
+    }
+  }
+
   async function loadHistoryTable(date) {
     if (!date) return;
     const tbody = document.getElementById("historyTableBody");
@@ -326,6 +394,7 @@
     SMART_SPACING: "Smart Leading Space",
     MAX_RECORD_SECONDS: "Max Recording (seconds)",
     SAVE_RECORDINGS: "Save WAV Backups (7 days)",
+    MIC_GAIN: "Mic Gain (auto or 1-10)",
     COST_STT_AUDIO_INPUT_USD_PER_1M: "STT Audio Input ($/1M)",
     COST_STT_AUDIO_USD_PER_MINUTE: "STT Audio ($/minute)",
     COST_STT_TEXT_INPUT_USD_PER_1M: "STT Text Input ($/1M)",
@@ -336,7 +405,7 @@
 
   const SELECT_OPTIONS = {
     STT_PROVIDER: ["openai", "deepgram"],
-    STT_MODE: ["batch", "realtime"],
+    STT_MODE: ["batch"], // realtime is legacy, unsupported
     STT_LANGUAGE: ["auto", "ru", "en"],
     HOTKEY_MODE: ["hold", "toggle"],
     WAVE_THEME: ["green", "purple", "yellow", "red", "blue"],
@@ -404,6 +473,7 @@
         "SMART_SPACING",
         "MAX_RECORD_SECONDS",
         "SAVE_RECORDINGS",
+        "MIC_GAIN",
       ],
     },
     {

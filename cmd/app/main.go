@@ -76,11 +76,49 @@ func main() {
 	cfg := config.Load(database)
 	cfgHolder := config.NewHolder(database, cfg)
 
-	adminURL, err := api.Start(database, store.LogsDir(), store.HistoryDir(), func() {
+	// Manual re-transcription of a saved WAV from the dashboard. Records
+	// usage and history like a normal dictation, but never pastes anywhere.
+	retranscribe := func(filename string) (string, error) {
+		wavData, err := os.ReadFile(filepath.Join(store.RecordingsDir(), filename))
+		if err != nil {
+			return "", err
+		}
+		c := cfgHolder.Get()
+		apiKey := c.OpenAIKey
+		if c.Provider == "deepgram" {
+			apiKey = c.DeepgramKey
+		}
+		started := time.Now()
+		result, err := stt.Transcribe(context.Background(), c.Provider, c.Model, apiKey, c.Language, c.STTPrompt, wavData)
+		if err != nil {
+			return "", err
+		}
+		durationSeconds := estimateWAVDurationSeconds(wavData)
+		record := usage.Record{
+			Time:            time.Now(),
+			Kind:            "stt",
+			Provider:        c.Provider,
+			Model:           c.Model,
+			DurationSeconds: durationSeconds,
+			AudioBytes:      len(wavData),
+			TextChars:       len([]rune(result.Text)),
+			ElapsedMS:       time.Since(started).Milliseconds(),
+			Usage:           result.Usage,
+			CostUSD:         sttCost(c, result.Usage, durationSeconds),
+			Text:            result.Text,
+		}
+		if err := database.InsertUsage(context.Background(), record); err != nil {
+			log.Printf("DB usage insert error: %v", err)
+		}
+		log.Printf("Retranscribed %s: %d chars, cost $%.6f", filename, len([]rune(result.Text)), record.CostUSD)
+		return result.Text, nil
+	}
+
+	adminURL, err := api.Start(database, store.LogsDir(), store.HistoryDir(), store.RecordingsDir(), func() {
 		cfgHolder.Reload()
 		next := cfgHolder.Get()
 		log.Printf("Settings reloaded | %s: %s | LLM: %s", next.Provider, next.Model, llmStatus(next.DisableLLM))
-	})
+	}, retranscribe)
 	if err != nil {
 		log.Printf("Failed to start Admin API: %v", err)
 	} else {
@@ -99,6 +137,9 @@ func main() {
 	}
 	applyPasteOptions(cfg)
 	cfgHolder.OnChange(applyPasteOptions)
+
+	audio.SetGain(cfg.MicGain)
+	cfgHolder.OnChange(func(c *config.Config) { audio.SetGain(c.MicGain) })
 
 	store.PruneRecordings(7 * 24 * time.Hour)
 
