@@ -174,7 +174,7 @@ static void wwSpawn(WWBlob *b, double now, BOOL initial) {
         CGFloat cx = left + span / 2;
         CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
         CGFloat comps[] = {
-            0.35, 0.40, 1.0, 0.10 + 0.30 * amp,
+            0.35, 0.40, 1.0, 0.08 + 0.20 * amp,
             0.35, 0.40, 1.0, 0.0
         };
         CGFloat locs[] = {0, 1};
@@ -240,16 +240,16 @@ static void wwSpawn(WWBlob *b, double now, BOOL initial) {
             CGPathAddLineToPoint(path, NULL, left + k * step, midY - ys[k] * norm * maxH * level);
         CGPathCloseSubpath(path);
 
-        CGColorRef glow = CGColorCreateGenericRGB(cr, cg, cb, 0.9);
+        CGColorRef glow = CGColorCreateGenericRGB(cr, cg, cb, 0.55);
         CGContextSaveGState(ctx);
         CGContextSetShadowWithColor(ctx, CGSizeZero, 6 + 10 * amp, glow);
-        CGContextSetRGBFillColor(ctx, cr, cg, cb, 0.55);
+        CGContextSetRGBFillColor(ctx, cr, cg, cb, 0.36);
         CGContextAddPath(ctx, path);
         CGContextFillPath(ctx);
         CGContextRestoreGState(ctx);
 
         // Bright inner core for a luminous edge.
-        CGContextSetRGBStrokeColor(ctx, fmin(1, cr + 0.3), fmin(1, cg + 0.3), fmin(1, cb + 0.3), 0.45);
+        CGContextSetRGBStrokeColor(ctx, fmin(1, cr + 0.15), fmin(1, cg + 0.15), fmin(1, cb + 0.15), 0.3);
         CGContextSetLineWidth(ctx, 0.8);
         CGContextAddPath(ctx, path);
         CGContextStrokePath(ctx);
@@ -272,8 +272,8 @@ static void wwSpawn(WWBlob *b, double now, BOOL initial) {
         CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
         double s = 0.5 + 0.5 * sin(hue * 2 * M_PI);
         CGFloat comps[] = {
-            1.0, 1.0, 1.0, 0.95,
-            0.3 + 0.7 * s, 0.6 * (1 - s) + 0.2, 1.0, 0.55,
+            1.0, 1.0, 1.0, 0.6,
+            0.3 + 0.7 * s, 0.6 * (1 - s) + 0.2, 1.0, 0.38,
             0.4, 0.3, 1.0, 0.0
         };
         CGFloat locs[] = {0, 0.25, 1};
@@ -290,7 +290,7 @@ static void wwSpawn(WWBlob *b, double now, BOOL initial) {
     // Thin white centre line fading toward the edges.
     {
         CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
-        CGFloat a = 0.22 + 0.3 * amp;
+        CGFloat a = 0.18 + 0.2 * amp;
         CGFloat comps[] = {1, 1, 1, 0, 1, 1, 1, a, 1, 1, 1, 0};
         CGFloat locs[] = {0, 0.5, 1};
         CGGradientRef g = CGGradientCreateWithColorComponents(cs, comps, locs, 3);
