@@ -17,7 +17,49 @@ import (
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/QuartzCore.h>
 
-@interface OverlayView : NSView
+// Siri-style voice visualization: several luminous colored curves, each made of
+// a few drifting "blobs" (gaussian-windowed sines). Blobs are mirrored around the
+// centre line, filled translucently and composited additively so overlaps glow.
+
+#define WW_CURVES 3
+#define WW_BLOBS 4
+
+typedef struct {
+    double offset;   // centre, in [-1, 1]
+    double width;    // gaussian width
+    double freq;     // sine frequency
+    double phase;
+    double speed;    // phase velocity
+    double drift;    // offset velocity
+    double amp;      // relative height
+    double born;
+    double life;
+} WWBlob;
+
+static double wwRand(double lo, double hi) {
+    return lo + (hi - lo) * ((double)arc4random_uniform(1000000) / 1000000.0);
+}
+
+static void wwSpawn(WWBlob *b, double now, BOOL initial) {
+    b->offset = wwRand(-0.75, 0.75);
+    b->width = wwRand(0.18, 0.45);
+    b->freq = wwRand(2.5, 6.0);
+    b->phase = wwRand(0, 2 * M_PI);
+    b->speed = wwRand(-9.0, 9.0);
+    b->drift = wwRand(-0.25, 0.25);
+    b->amp = wwRand(0.45, 1.0);
+    b->life = wwRand(1.2, 2.8);
+    // Stagger initial blobs so they don't all respawn together.
+    b->born = initial ? now - wwRand(0, b->life) : now;
+}
+
+@interface OverlayView : NSView {
+    WWBlob blobs[WW_CURVES][WW_BLOBS];
+    BOOL seeded;
+    double lastTime;
+    double amp;        // smoothed voice amplitude, 0..1
+    double hue;        // slow color rotation
+}
 @property (nonatomic, assign) double levelAt;
 @property (nonatomic, retain) NSArray *levels;
 @property (nonatomic, retain) NSString *status;
@@ -26,139 +68,214 @@ import (
 @end
 
 @implementation OverlayView
+- (BOOL)isOpaque { return NO; }
+
 - (void)drawRect:(NSRect)dirtyRect {
-    [[NSColor colorWithRed:10.0/255.0 green:10.0/255.0 blue:12.0/255.0 alpha:0.95] set];
-    NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:[self bounds] xRadius:[self bounds].size.height/2 yRadius:[self bounds].size.height/2];
-    [path fill];
+    NSRect b = [self bounds];
+    CGContextRef ctx = [[NSGraphicsContext currentContext] CGContext];
+    CGFloat r = b.size.height / 2;
+
+    CGContextClearRect(ctx, b);
+
+    NSBezierPath *capsule = [NSBezierPath bezierPathWithRoundedRect:b xRadius:r yRadius:r];
+    NSGradient *bg = [[NSGradient alloc] initWithStartingColor:[NSColor colorWithRed:0.07 green:0.07 blue:0.10 alpha:0.94]
+                                                   endingColor:[NSColor colorWithRed:0.02 green:0.02 blue:0.04 alpha:0.94]];
+    [bg drawInBezierPath:capsule angle:-90];
+    [bg release];
 
     if (!self.wide) {
-        // Draw idle glyph
-        [[NSColor colorWithRed:120.0/255.0 green:220.0/255.0 blue:130.0/255.0 alpha:1.0] set];
-        double baseY = [self bounds].size.height / 2;
-        int heights[] = {6, 12, 6};
-        for (int i = 0; i < 3; i++) {
-            NSRect rect = NSMakeRect(10 + i * 5, baseY - heights[i] / 2, 2, heights[i]);
-            NSRectFill(rect);
-        }
+        [self drawIdleGlyph];
     } else {
-        if ([self.status isEqualToString:@"processing"]) {
-            [self drawProcessingWave];
-        } else {
-            [self drawSiriWave];
+        CGContextSaveGState(ctx);
+        [capsule addClip];
+        [self drawSiriWave:ctx];
+        CGContextRestoreGState(ctx);
+        if (![self.status isEqualToString:@"processing"]) {
             [self drawTimer];
         }
     }
+
+    // Hairline rim to lift the capsule off dark backgrounds.
+    NSBezierPath *rim = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(b, 0.5, 0.5) xRadius:r - 0.5 yRadius:r - 0.5];
+    [[NSColor colorWithWhite:1.0 alpha:0.10] set];
+    rim.lineWidth = 1.0;
+    [rim stroke];
 }
 
-- (void)drawSiriWave {
-    double width = [self bounds].size.width;
-    double height = [self bounds].size.height;
-    double baseY = height / 2;
-    
-    // Get current volume level (average of last few samples)
-    double avgLevel = 0;
-    int count = 8;
-    for (int i = 0; i < count; i++) {
-        int idx = ((int)self.levelAt - 1 - i + (int)self.levels.count) % (int)self.levels.count;
-        avgLevel += [[self.levels objectAtIndex:idx] doubleValue];
-    }
-    avgLevel /= count;
-    
-    double sensitivity = 15.0;
-    double normalizedLevel = fmax(0.01, fmin(1.0, avgLevel * sensitivity));
-    BOOL isSilent = (normalizedLevel < 0.04);
+- (void)drawIdleGlyph {
+    NSRect b = [self bounds];
+    NSPoint c = NSMakePoint(NSMidX(b), NSMidY(b));
+    double pulse = 0.5 + 0.5 * sin(CACurrentMediaTime() * 2.0);
+    NSGradient *g = [[NSGradient alloc] initWithColorsAndLocations:
+        [NSColor colorWithRed:0.55 green:0.85 blue:1.0 alpha:0.95], 0.0,
+        [NSColor colorWithRed:0.55 green:0.35 blue:1.0 alpha:0.55], 0.55,
+        [NSColor colorWithRed:0.55 green:0.35 blue:1.0 alpha:0.0], 1.0, nil];
+    [g drawFromCenter:c radius:0 toCenter:c radius:6 + pulse * 2 options:0];
+    [g release];
+}
 
-    NSTimeInterval elapsed = [[NSDate date] timeIntervalSince1970] - self.started;
-    
-    // Draw 7 overlapping waves for a richer look
-    struct Wave {
-        double freq;
-        double amp;
-        double phase;
-        NSColor *color;
-        double width;
-    } waves[] = {
-        {1.1, 0.8, elapsed * 4.5, [NSColor colorWithRed:0.0 green:0.9 blue:1.0 alpha:0.8], 3.0},  // Cyan
-        {0.7, 0.6, elapsed * 2.8, [NSColor colorWithRed:0.7 green:0.2 blue:1.0 alpha:0.7], 2.5},  // Purple
-        {1.4, 0.4, elapsed * 5.5, [NSColor colorWithRed:1.0 green:0.1 blue:0.5 alpha:0.6], 2.0},  // Pink
-        {0.9, 0.5, elapsed * 3.2, [NSColor colorWithRed:0.2 green:1.0 blue:0.4 alpha:0.5], 2.0},  // Green
-        {1.8, 0.3, elapsed * 6.0, [NSColor colorWithRed:1.0 green:0.8 blue:0.0 alpha:0.4], 1.5},  // Gold
-        {0.5, 0.7, elapsed * 2.0, [NSColor colorWithRed:0.0 green:0.4 blue:1.0 alpha:0.5], 2.5},  // Blue
-        {2.2, 0.2, elapsed * 7.5, [NSColor colorWithRed:1.0 green:1.0 blue:1.0 alpha:0.3], 1.0}   // White
+- (double)targetAmplitude {
+    NSUInteger n = self.levels.count;
+    if (n == 0) return 0;
+    double sum = 0;
+    int count = 3;
+    for (int i = 0; i < count; i++) {
+        int idx = ((int)self.levelAt - 1 - i + (int)n) % (int)n;
+        sum += [[self.levels objectAtIndex:idx] doubleValue];
+    }
+    double rms = sum / count;
+    if (rms <= 0.0001) return 0;
+    // Map loudness in dB (-50..-12 dBFS) to 0..1 for a perceptual response.
+    double db = 20.0 * log10(rms);
+    return fmax(0, fmin(1, (db + 50.0) / 38.0));
+}
+
+- (void)drawSiriWave:(CGContextRef)ctx {
+    double now = CACurrentMediaTime();
+    double dt = lastTime > 0 ? fmin(0.1, now - lastTime) : 1.0 / 60.0;
+    lastTime = now;
+
+    if (!seeded) {
+        for (int c = 0; c < WW_CURVES; c++)
+            for (int i = 0; i < WW_BLOBS; i++)
+                wwSpawn(&blobs[c][i], now, YES);
+        seeded = YES;
+    }
+
+    BOOL processing = [self.status isEqualToString:@"processing"];
+    double target;
+    double speedMul;
+    if (processing) {
+        // Calm "thinking" breath while the transcript is being produced.
+        target = 0.28 + 0.12 * sin(now * 3.2);
+        speedMul = 0.6;
+    } else {
+        target = [self targetAmplitude];
+        speedMul = 0.35 + 1.1 * amp;
+    }
+    // Fast attack, slower release, frame-rate independent.
+    double rate = target > amp ? 22.0 : 7.0;
+    amp += (target - amp) * (1.0 - exp(-rate * dt));
+    hue += dt * (0.05 + amp * 0.25);
+
+    NSRect bounds = [self bounds];
+    double width = bounds.size.width;
+    double height = bounds.size.height;
+    double midY = height / 2;
+    double left = 18;
+    double right = processing ? width - 18 : width - 64;
+    double span = right - left;
+    double maxH = height / 2 - 3;
+
+    // Ambient glow behind the waves, breathing with the voice.
+    {
+        CGFloat cx = left + span / 2;
+        CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+        CGFloat comps[] = {
+            0.35, 0.40, 1.0, 0.10 + 0.30 * amp,
+            0.35, 0.40, 1.0, 0.0
+        };
+        CGFloat locs[] = {0, 1};
+        CGGradientRef g = CGGradientCreateWithColorComponents(cs, comps, locs, 2);
+        CGContextSaveGState(ctx);
+        CGContextTranslateCTM(ctx, cx, midY);
+        CGContextScaleCTM(ctx, span / height, 1.0);
+        CGContextDrawRadialGradient(ctx, g, CGPointZero, 0, CGPointZero, height * 0.9, 0);
+        CGContextRestoreGState(ctx);
+        CGGradientRelease(g);
+        CGColorSpaceRelease(cs);
+    }
+
+    // Palette: cyan, magenta, violet — rotated slightly over time.
+    double base[WW_CURVES][3] = {
+        {0.10, 0.85, 1.00},
+        {1.00, 0.22, 0.62},
+        {0.48, 0.32, 1.00},
     };
 
-    if (isSilent) {
-        // Draw a single faint idle line
-        [[NSColor colorWithWhite:0.5 alpha:0.2] set];
-        NSBezierPath *p = [NSBezierPath bezierPath];
-        [p moveToPoint:NSMakePoint(35, baseY)];
-        [p lineToPoint:NSMakePoint(width - 90, baseY)];
-        p.lineWidth = 1.0;
-        [p stroke];
-        return;
-    }
+    CGContextSaveGState(ctx);
+    CGContextSetBlendMode(ctx, kCGBlendModePlusLighter);
 
-    // High volume "flash" effect
-    if (normalizedLevel > 0.6) {
-        [[NSColor colorWithWhite:1.0 alpha:(normalizedLevel - 0.6) * 0.3] set];
-        NSBezierPath *flash = [NSBezierPath bezierPathWithRoundedRect:[self bounds] xRadius:height/2 yRadius:height/2];
-        [flash fill];
-    }
+    // Keep a visible shimmer even in silence, like Siri's resting line.
+    double level = fmax(0.06, amp);
+    int step = 2;
 
-    for (int i = 0; i < 7; i++) {
-        struct Wave wave = waves[i];
-        NSBezierPath *p = [NSBezierPath bezierPath];
-        [wave.color set];
-        
-        double left = 35;
-        double right = width - 90;
-        double waveWidth = right - left;
-        
-        [p moveToPoint:NSMakePoint(left, baseY)];
-        
-        for (double x = 0; x <= waveWidth; x += 1.0) {
-            double normX = x / waveWidth;
-            double envelope = pow(sin(normX * M_PI), 2.5);
-            
-            double y = baseY + sin(x * 0.07 * wave.freq + wave.phase) * (height * 0.45) * normalizedLevel * envelope * wave.amp;
-            [p lineToPoint:NSMakePoint(left + x, y)];
+    for (int c = 0; c < WW_CURVES; c++) {
+        double shift = 0.5 + 0.5 * sin(hue * 2 * M_PI + c * 2.1);
+        double cr = base[c][0] * (0.8 + 0.2 * shift);
+        double cg = base[c][1] * (0.8 + 0.2 * (1 - shift));
+        double cb = base[c][2];
+
+        int pts = (int)(span / step) + 1;
+        double ys[pts];
+        double peak = 0;
+        for (int k = 0; k < pts; k++) {
+            double x = -1.0 + 2.0 * k / (pts - 1);
+            double y = 0;
+            for (int i = 0; i < WW_BLOBS; i++) {
+                WWBlob *bl = &blobs[c][i];
+                double t = (now - bl->born) / bl->life;
+                double fade = sin(fmin(1, fmax(0, t)) * M_PI);
+                double d = (x - bl->offset) / bl->width;
+                y += bl->amp * fade * exp(-d * d) * sin(bl->freq * x * M_PI - bl->phase);
+            }
+            double edge = 1 - x * x;
+            y = fabs(y) * edge * edge;
+            ys[k] = y;
+            if (y > peak) peak = y;
         }
-        
-        p.lineWidth = wave.width;
-        p.lineCapStyle = NSLineCapStyleRound;
-        [p stroke];
-    }
-}
+        double norm = peak > 1 ? 1.0 / peak : 1.0;
 
-- (void)drawProcessingWave {
-    double width = [self bounds].size.width;
-    double height = [self bounds].size.height;
-    double baseY = height / 2;
-    NSTimeInterval elapsed = [[NSDate date] timeIntervalSince1970] - self.started;
-    
-    double left = 35;
-    double right = width - 35;
-    double waveWidth = right - left;
+        CGMutablePathRef path = CGPathCreateMutable();
+        CGPathMoveToPoint(path, NULL, left, midY);
+        for (int k = 0; k < pts; k++)
+            CGPathAddLineToPoint(path, NULL, left + k * step, midY + ys[k] * norm * maxH * level);
+        for (int k = pts - 1; k >= 0; k--)
+            CGPathAddLineToPoint(path, NULL, left + k * step, midY - ys[k] * norm * maxH * level);
+        CGPathCloseSubpath(path);
 
-    NSColor *purple = [NSColor colorWithRed:0.7 green:0.3 blue:1.0 alpha:1.0];
-    
-    for (int i = 0; i < 3; i++) {
-        NSBezierPath *p = [NSBezierPath bezierPath];
-        double alpha = 0.8 / (i + 1);
-        double lineWidth = 2.0 + (i * 4.0);
-        [[purple colorWithAlphaComponent:alpha] set];
-        
-        [p moveToPoint:NSMakePoint(left, baseY)];
-        for (double x = 0; x <= waveWidth; x += 1.0) {
-            double normX = x / waveWidth;
-            double envelope = sin(normX * M_PI);
-            double y = baseY + sin(x * 0.12 - elapsed * 18.0) * 12.0 * envelope;
-            [p lineToPoint:NSMakePoint(left + x, y)];
+        CGColorRef glow = CGColorCreateGenericRGB(cr, cg, cb, 0.9);
+        CGContextSaveGState(ctx);
+        CGContextSetShadowWithColor(ctx, CGSizeZero, 6 + 10 * amp, glow);
+        CGContextSetRGBFillColor(ctx, cr, cg, cb, 0.55);
+        CGContextAddPath(ctx, path);
+        CGContextFillPath(ctx);
+        CGContextRestoreGState(ctx);
+
+        // Bright inner core for a luminous edge.
+        CGContextSetRGBStrokeColor(ctx, fmin(1, cr + 0.3), fmin(1, cg + 0.3), fmin(1, cb + 0.3), 0.45);
+        CGContextSetLineWidth(ctx, 0.8);
+        CGContextAddPath(ctx, path);
+        CGContextStrokePath(ctx);
+
+        CGColorRelease(glow);
+        CGPathRelease(path);
+
+        // Advance blobs.
+        for (int i = 0; i < WW_BLOBS; i++) {
+            WWBlob *bl = &blobs[c][i];
+            bl->phase += bl->speed * speedMul * dt;
+            bl->offset += bl->drift * speedMul * dt;
+            if (now - bl->born > bl->life) wwSpawn(bl, now, NO);
         }
-        p.lineWidth = lineWidth;
-        p.lineCapStyle = NSLineCapStyleRound;
-        [p stroke];
     }
+
+    // Thin white centre line fading toward the edges.
+    {
+        CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+        CGFloat a = 0.22 + 0.3 * amp;
+        CGFloat comps[] = {1, 1, 1, 0, 1, 1, 1, a, 1, 1, 1, 0};
+        CGFloat locs[] = {0, 0.5, 1};
+        CGGradientRef g = CGGradientCreateWithColorComponents(cs, comps, locs, 3);
+        CGContextSaveGState(ctx);
+        CGContextClipToRect(ctx, CGRectMake(left, midY - 0.5, span, 1.0));
+        CGContextDrawLinearGradient(ctx, g, CGPointMake(left, midY), CGPointMake(right, midY), 0);
+        CGContextRestoreGState(ctx);
+        CGGradientRelease(g);
+        CGColorSpaceRelease(cs);
+    }
+
+    CGContextRestoreGState(ctx);
 }
 
 - (void)drawTimer {
@@ -166,16 +283,13 @@ import (
     int totalSeconds = (int)elapsed;
     NSString *timeStr = [NSString stringWithFormat:@"%d:%02d", totalSeconds / 60, totalSeconds % 60];
 
-    // Vertically center text: (height - fontHeight) / 2
-    // For 14pt font, fontHeight is roughly 16-18pt. 
-    // (48 - 16) / 2 = 16.
-    double textY = 16; 
-
     NSDictionary *attrs = @{
-        NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:14 weight:NSFontWeightBold],
-        NSForegroundColorAttributeName: [NSColor whiteColor]
+        NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightSemibold],
+        NSForegroundColorAttributeName: [NSColor colorWithWhite:1.0 alpha:0.85]
     };
-    [timeStr drawAtPoint:NSMakePoint([self bounds].size.width - 65, textY) withAttributes:attrs];
+    NSSize sz = [timeStr sizeWithAttributes:attrs];
+    NSRect b = [self bounds];
+    [timeStr drawAtPoint:NSMakePoint(b.size.width - 22 - sz.width, (b.size.height - sz.height) / 2) withAttributes:attrs];
 }
 @end
 
