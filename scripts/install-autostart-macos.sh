@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT_DIR/scripts/macos-lib.sh"
 ARCH=$(uname -m)
 if [ "$ARCH" = "x86_64" ] || [ "$ARCH" = "amd64" ]; then
   DEFAULT_BIN="$ROOT_DIR/dist/wispwind-darwin-amd64"
@@ -11,9 +12,6 @@ fi
 BIN_PATH="${1:-$DEFAULT_BIN}"
 APP_NAME="WispWind"
 LABEL="com.wispwind.app"
-BUNDLE_ID="com.wispwind.desktop"
-LOG_DIR="$ROOT_DIR/dist/logs"
-WORK_DIR="$ROOT_DIR/dist"
 APP_DIR="$HOME/Applications/${APP_NAME}.app"
 APP_CONTENTS="$APP_DIR/Contents"
 APP_MACOS="$APP_CONTENTS/MacOS"
@@ -29,16 +27,17 @@ if [ ! -x "$BIN_PATH" ]; then
   exit 1
 fi
 
-mkdir -p "$LOG_DIR" "$HOME/Applications" "$APP_MACOS" "$APP_RESOURCES"
+mkdir -p "$HOME/Applications" "$APP_MACOS" "$APP_RESOURCES"
 pkill -f "$APP_MACOS/$APP_NAME" >/dev/null 2>&1 || true
 pkill -f "$APP_MACOS/${APP_NAME}-bin" >/dev/null 2>&1 || true
+migrate_bundle_data "$APP_DIR"
 cp "$BIN_PATH" "$APP_EXE"
 chmod +x "$APP_EXE"
 
 if [ -f "$ENV_SOURCE" ]; then
-  cp "$ENV_SOURCE" "$APP_MACOS/.env"
+  cp "$ENV_SOURCE" "$DATA_DIR/.env"
 elif [ -f "$ROOT_DIR/.env" ]; then
-  cp "$ROOT_DIR/.env" "$APP_MACOS/.env"
+  cp "$ROOT_DIR/.env" "$DATA_DIR/.env"
 fi
 
 if [ -f "$SYSTEM_ICON" ]; then
@@ -75,6 +74,8 @@ cat > "$APP_CONTENTS/Info.plist" <<EOF
 </dict>
 </plist>
 EOF
+
+sign_code "$APP_DIR"
 
 PLIST_PATH="$HOME/Library/LaunchAgents/$LABEL.plist"
 launchctl bootout "gui/$(id -u)" "$PLIST_PATH" >/dev/null 2>&1 || true

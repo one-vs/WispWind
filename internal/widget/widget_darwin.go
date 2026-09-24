@@ -146,9 +146,9 @@ static void wwSpawn(WWBlob *b, double now, BOOL initial) {
     double target;
     double speedMul;
     if (processing) {
-        // Calm "thinking" breath while the transcript is being produced.
-        target = 0.28 + 0.12 * sin(now * 3.2);
-        speedMul = 0.6;
+        // Energetic "thinking" state while audio is sent to the model.
+        target = 0.82 + 0.12 * sin(now * 5.0);
+        speedMul = 1.3;
     } else {
         target = [self targetAmplitude];
         speedMul = 0.35 + 1.1 * amp;
@@ -156,7 +156,9 @@ static void wwSpawn(WWBlob *b, double now, BOOL initial) {
     // Fast attack, slower release, frame-rate independent.
     double rate = target > amp ? 22.0 : 7.0;
     amp += (target - amp) * (1.0 - exp(-rate * dt));
-    hue += dt * (0.05 + amp * 0.25);
+    hue += dt * (processing ? 0.6 : 0.05 + amp * 0.25);
+    // Processing: a light sweeps back and forth, lighting the waves as it passes.
+    double scan = sin(now * 2.6);
 
     NSRect bounds = [self bounds];
     double width = bounds.size.width;
@@ -221,6 +223,10 @@ static void wwSpawn(WWBlob *b, double now, BOOL initial) {
             }
             double edge = 1 - x * x;
             y = fabs(y) * edge * edge;
+            if (processing) {
+                double ds = x - scan;
+                y *= 0.3 + 0.9 * exp(-ds * ds / 0.12);
+            }
             ys[k] = y;
             if (y > peak) peak = y;
         }
@@ -258,6 +264,27 @@ static void wwSpawn(WWBlob *b, double now, BOOL initial) {
             bl->offset += bl->drift * speedMul * dt;
             if (now - bl->born > bl->life) wwSpawn(bl, now, NO);
         }
+    }
+
+    // Sweeping comet of light for the processing state.
+    if (processing) {
+        CGFloat cx = left + (scan + 1) / 2 * span;
+        CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+        double s = 0.5 + 0.5 * sin(hue * 2 * M_PI);
+        CGFloat comps[] = {
+            1.0, 1.0, 1.0, 0.95,
+            0.3 + 0.7 * s, 0.6 * (1 - s) + 0.2, 1.0, 0.55,
+            0.4, 0.3, 1.0, 0.0
+        };
+        CGFloat locs[] = {0, 0.25, 1};
+        CGGradientRef g = CGGradientCreateWithColorComponents(cs, comps, locs, 3);
+        CGContextSaveGState(ctx);
+        CGContextTranslateCTM(ctx, cx, midY);
+        CGContextScaleCTM(ctx, 3.0, 1.0);
+        CGContextDrawRadialGradient(ctx, g, CGPointZero, 0, CGPointZero, height * 0.42, 0);
+        CGContextRestoreGState(ctx);
+        CGGradientRelease(g);
+        CGColorSpaceRelease(cs);
     }
 
     // Thin white centre line fading toward the edges.

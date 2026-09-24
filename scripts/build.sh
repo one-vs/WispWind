@@ -15,38 +15,18 @@ for arg in "$@"; do
     fi
 done
 
-# Code signing: a stable certificate identity keeps macOS privacy grants
-# (Accessibility, Input Monitoring) valid across rebuilds; the linker's ad-hoc
-# signature changes with every build and makes macOS forget them.
-# Override with CODESIGN_IDENTITY="<name or SHA-1>", or CODESIGN_IDENTITY=none to skip.
-BUNDLE_ID="com.wispwind.desktop"
-SIGN_IDENTITY="${CODESIGN_IDENTITY:-}"
-if [ -z "$SIGN_IDENTITY" ]; then
-    SIGN_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
-        | grep -E '"(Developer ID Application|Apple Development)' \
-        | head -1 | awk '{print $2}')
-fi
-
-sign_binary() {
-    local bin="$1"
-    if [ -z "$SIGN_IDENTITY" ] || [ "$SIGN_IDENTITY" = "none" ]; then
-        echo "Skipping code signing (no identity); privacy permissions will reset after each rebuild."
-        return 0
-    fi
-    echo "Signing $bin with identity $SIGN_IDENTITY..."
-    codesign --force --timestamp=none --identifier "$BUNDLE_ID" --sign "$SIGN_IDENTITY" "$bin"
-}
+source "$(dirname "${BASH_SOURCE[0]}")/macos-lib.sh"
 
 build_arm64() {
     echo "Building for macOS (arm64)..."
     GOOS=darwin GOARCH=arm64 CGO_ENABLED=1 go build "$BUILD_FLAGS" -o $OUTPUT_DIR/$APP_NAME-darwin-arm64 ./cmd/app &&
-        sign_binary $OUTPUT_DIR/$APP_NAME-darwin-arm64
+        sign_code $OUTPUT_DIR/$APP_NAME-darwin-arm64
 }
 
 build_amd64() {
     echo "Building for macOS (amd64)..."
     GOOS=darwin GOARCH=amd64 CGO_ENABLED=1 go build "$BUILD_FLAGS" -o $OUTPUT_DIR/$APP_NAME-darwin-amd64 ./cmd/app &&
-        sign_binary $OUTPUT_DIR/$APP_NAME-darwin-amd64
+        sign_code $OUTPUT_DIR/$APP_NAME-darwin-amd64
 }
 
 if [ "$BUILD_ALL" = true ]; then
