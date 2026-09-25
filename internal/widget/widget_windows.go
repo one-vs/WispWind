@@ -1,3 +1,5 @@
+//go:build windows
+
 package widget
 
 // Overlay widget rendered with per-pixel alpha via UpdateLayeredWindow.

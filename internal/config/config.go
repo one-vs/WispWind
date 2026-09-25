@@ -5,12 +5,14 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 
 	"wispwind/internal/db"
+	"wispwind/internal/storage"
 
 	"github.com/joho/godotenv"
 )
@@ -131,6 +133,9 @@ func Load(database *db.DB) *Config {
 	hotkeyHistory := getSetting(database, "HOTKEY_HISTORY", "HOTKEY_HISTORY")
 	if hotkeyHistory == "" {
 		hotkeyHistory = "ctrl+space+z"
+		if runtime.GOOS == "darwin" {
+			hotkeyHistory = "alt+shift"
+		}
 	}
 	smartSpacing := strings.EqualFold(getSetting(database, "SMART_SPACING", "SMART_SPACING"), "true")
 	restoreClipboard := !strings.EqualFold(getSetting(database, "RESTORE_CLIPBOARD", "RESTORE_CLIPBOARD"), "false")
@@ -343,8 +348,8 @@ func getFloatSetting(database *db.DB, key string, fallback float64) float64 {
 
 func envPaths() []string {
 	paths := []string{}
-	if exe, err := os.Executable(); err == nil {
-		paths = append(paths, filepath.Join(filepath.Dir(exe), ".env"))
+	if dir, err := storage.AppDir(); err == nil {
+		paths = append(paths, filepath.Join(dir, ".env"))
 	}
 	paths = append(paths, ".env")
 	return paths

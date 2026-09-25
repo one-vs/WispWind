@@ -1,3 +1,5 @@
+//go:build windows
+
 package paste
 
 import (
@@ -117,6 +119,17 @@ func sendCombo(modifier, key uint16) {
 
 func Init() error {
 	return nil // atotto/clipboard doesn't require initialization
+}
+
+// SmartContext carries the text around the caret captured before recording.
+// On Windows smart spacing probes the target at paste time instead, so it
+// is empty; it exists for API parity with macOS.
+type SmartContext struct{}
+
+func CaptureContextForPID(pid int32) SmartContext { return SmartContext{} }
+
+func PasteTextSmartWithContext(text string, _ SmartContext) {
+	PasteTextSmart(text)
 }
 
 func PasteText(text string) {
@@ -254,6 +267,8 @@ type LiveWriter struct {
 func NewLiveWriter() *LiveWriter {
 	return &LiveWriter{}
 }
+
+func (w *LiveWriter) SetSmartContext(SmartContext) {}
 
 func (w *LiveWriter) Replace(text string) {
 	w.erase()

@@ -34,10 +34,9 @@ func NewRealtimeSTT(ctx context.Context, apiKey, model, language, prompt string,
 		return nil, err
 	}
 
-	url := "wss://api.openai.com/v1/realtime?intent=transcription"
+	url := fmt.Sprintf("wss://api.openai.com/v1/realtime?model=%s", model)
 	header := http.Header{}
 	header.Add("Authorization", "Bearer "+apiKey)
-	header.Add("OpenAI-Beta", "realtime=v1")
 
 	conn, _, err := websocket.DefaultDialer.Dial(url, header)
 	if err != nil {
@@ -62,18 +61,23 @@ func NewRealtimeSTT(ctx context.Context, apiKey, model, language, prompt string,
 	}
 
 	sessionUpdate := map[string]interface{}{
-		"type": "transcription_session.update",
+		"type": "session.update",
 		"session": map[string]interface{}{
-			"input_audio_format":        "pcm16",
-			"input_audio_transcription": transcription,
-			"input_audio_noise_reduction": map[string]interface{}{
-				"type": "near_field",
-			},
-			"turn_detection": map[string]interface{}{
-				"type":                "server_vad",
-				"threshold":           0.8, // Increased from 0.5 (noise reduction/sensitivity)
-				"prefix_padding_ms":   300,
-				"silence_duration_ms": 700,
+			"type": "transcription",
+			"audio": map[string]interface{}{
+				"input": map[string]interface{}{
+					"format":        "pcm16",
+					"transcription": transcription,
+					"noise_reduction": map[string]interface{}{
+						"type": "near_field",
+					},
+					"turn_detection": map[string]interface{}{
+						"type":                "server_vad",
+						"threshold":           0.8,
+						"prefix_padding_ms":   300,
+						"silence_duration_ms": 700,
+					},
+				},
 			},
 		},
 	}

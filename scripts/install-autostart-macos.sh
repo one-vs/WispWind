@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT_DIR/scripts/macos-lib.sh"
+ARCH=$(uname -m)
+if [ "$ARCH" = "x86_64" ] || [ "$ARCH" = "amd64" ]; then
+  DEFAULT_BIN="$ROOT_DIR/dist/wispwind-darwin-amd64"
+else
+  DEFAULT_BIN="$ROOT_DIR/dist/wispwind-darwin-arm64"
+fi
+BIN_PATH="${1:-$DEFAULT_BIN}"
+APP_NAME="WispWind"
+LABEL="com.wispwind.app"
+APP_DIR="$HOME/Applications/${APP_NAME}.app"
+APP_MACOS="$APP_DIR/Contents/MacOS"
+APP_EXE="$APP_MACOS/$APP_NAME"
+ENV_SOURCE="$ROOT_DIR/dist/.env"
+
+if [ ! -x "$BIN_PATH" ]; then
+  echo "Binary not found or not executable: $BIN_PATH"
+  echo "Build first: ./scripts/build.sh"
+  exit 1
+fi
+
+mkdir -p "$HOME/Applications"
+pkill -f "$APP_MACOS/$APP_NAME" >/dev/null 2>&1 || true
+pkill -f "$APP_MACOS/${APP_NAME}-bin" >/dev/null 2>&1 || true
+if [ -d "$APP_DIR" ]; then
+  migrate_bundle_data "$APP_DIR"
+fi
+write_app_bundle "$APP_DIR" "$BIN_PATH"
+
+mkdir -p "$DATA_DIR"
+if [ -f "$ENV_SOURCE" ]; then
+  cp "$ENV_SOURCE" "$DATA_DIR/.env"
+elif [ -f "$ROOT_DIR/.env" ]; then
+  cp "$ROOT_DIR/.env" "$DATA_DIR/.env"
+fi
+
+sign_code "$APP_DIR"
+
+PLIST_PATH="$HOME/Library/LaunchAgents/$LABEL.plist"
+launchctl bootout "gui/$(id -u)" "$PLIST_PATH" >/dev/null 2>&1 || true
+rm -f "$PLIST_PATH"
+
+osascript <<EOF
+tell application "System Events"
+  if exists login item "$APP_NAME" then
+    delete login item "$APP_NAME"
+  end if
+  make login item at end with properties {name:"$APP_NAME", path:"$APP_DIR", hidden:false}
+end tell
+EOF
+
+tccutil reset Accessibility "$BUNDLE_ID" >/dev/null 2>&1 || true
+tccutil reset ListenEvent "$BUNDLE_ID" >/dev/null 2>&1 || true
+
+open "$APP_DIR"
+sleep 1
+open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+
+echo "Autostart installed as Login Item: $APP_NAME"
+echo "Application bundle: $APP_DIR"
+echo "Accessibility registration was reset for: $BUNDLE_ID"
+echo "Enable WispWind in Privacy & Security > Accessibility, then restart it:"
+echo "  pkill -f \"$APP_EXE\" || true"
+echo "  open \"$APP_DIR\""

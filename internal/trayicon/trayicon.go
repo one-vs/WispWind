@@ -4,21 +4,45 @@ package trayicon
 // audio waveform (five rounded bars). Idle is soft green, recording is red.
 
 import (
+	"bytes"
 	"encoding/binary"
+	"image"
+	stdcolor "image/color"
+	"image/png"
 	"math"
 )
 
 const size = 64
 
 func Icon() []byte {
-	return StatusIcon(false)
+	return StatusIconICO(false)
 }
 
 type color struct {
 	r, g, b byte
 }
 
-func StatusIcon(recording bool) []byte {
+// StatusIconICO returns the tray icon as ICO (Windows).
+func StatusIconICO(recording bool) []byte {
+	return encodeICO(statusPixels(recording))
+}
+
+// StatusIconPNG returns the tray icon as PNG (macOS menu bar).
+func StatusIconPNG(recording bool) []byte {
+	pixels := statusPixels(recording) // BGRA, straight alpha
+	img := image.NewNRGBA(image.Rect(0, 0, size, size))
+	for y := 0; y < size; y++ {
+		for x := 0; x < size; x++ {
+			i := (y*size + x) * 4
+			img.SetNRGBA(x, y, stdcolor.NRGBA{pixels[i+2], pixels[i+1], pixels[i], pixels[i+3]})
+		}
+	}
+	var buf bytes.Buffer
+	_ = png.Encode(&buf, img)
+	return buf.Bytes()
+}
+
+func statusPixels(recording bool) []byte {
 	pixels := make([]byte, size*size*4)
 
 	bright := color{120, 225, 140} // idle: widget green accent
@@ -43,7 +67,7 @@ func StatusIcon(recording bool) []byte {
 		fillBarAA(pixels, x, cy-h/2, barW, h, barW/2, bright, deep)
 	}
 
-	return encodeICO(pixels)
+	return pixels
 }
 
 // fillBarAA draws an antialiased rounded bar with a vertical gradient.

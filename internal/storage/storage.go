@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -207,9 +208,28 @@ func (s *Store) TodayUsageSummary() (usage.Summary, error) {
 }
 
 func appDir() (string, error) {
+	return AppDir()
+}
+
+// AppDir is where WispWind keeps its data (.env, logs, history, usage).
+// Normally the executable's directory; inside a macOS .app bundle it is
+// ~/Library/Application Support/WispWind, since writing into the bundle
+// breaks its code signature and with it the privacy permissions.
+func AppDir() (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Dir(exe), nil
+	dir := filepath.Dir(exe)
+	if strings.HasSuffix(dir, ".app/Contents/MacOS") {
+		cfg, err := os.UserConfigDir()
+		if err != nil {
+			return "", err
+		}
+		dir = filepath.Join(cfg, "WispWind")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return "", err
+		}
+	}
+	return dir, nil
 }
