@@ -14,10 +14,10 @@ package history
 #import <Cocoa/Cocoa.h>
 #include <stdlib.h>
 
-static const CGFloat kPanelW = 520;
-static const CGFloat kRowH = 74;
-static const CGFloat kHeaderH = 34;
-static const CGFloat kPad = 12;
+static const CGFloat kPanelW = 380;
+static const CGFloat kRowH = 58;
+static const CGFloat kHeaderH = 28;
+static const CGFloat kPad = 10;
 
 @class WWHistoryPanel;
 
@@ -61,16 +61,16 @@ static NSTextField *wwLabel(NSFont *font, NSColor *color) {
         _timeText = [time copy];
         CGFloat inner = frame.size.width - 2 * kPad;
 
-        _timeLabel = wwLabel([NSFont systemFontOfSize:11 weight:NSFontWeightMedium],
+        _timeLabel = wwLabel([NSFont systemFontOfSize:10 weight:NSFontWeightMedium],
                              [NSColor colorWithWhite:1 alpha:0.45]);
-        _timeLabel.frame = NSMakeRect(kPad, frame.size.height - 24, inner, 15);
+        _timeLabel.frame = NSMakeRect(kPad, frame.size.height - 18, inner, 13);
         _timeLabel.stringValue = time;
         [self addSubview:_timeLabel];
 
         NSString *oneLine = [[text componentsSeparatedByCharactersInSet:
             [NSCharacterSet newlineCharacterSet]] componentsJoinedByString:@" "];
-        _textLabel = wwLabel([NSFont systemFontOfSize:13], [NSColor colorWithWhite:1 alpha:0.88]);
-        _textLabel.frame = NSMakeRect(kPad, 8, inner, 36);
+        _textLabel = wwLabel([NSFont systemFontOfSize:12], [NSColor colorWithWhite:1 alpha:0.88]);
+        _textLabel.frame = NSMakeRect(kPad, 6, inner, frame.size.height - 24);
         _textLabel.stringValue = oneLine;
         _textLabel.maximumNumberOfLines = 2;
         _textLabel.lineBreakMode = NSLineBreakByTruncatingTail;
@@ -209,9 +209,30 @@ static NSRect wwPlaceNearCursor(CGFloat w, CGFloat h) {
     return NSMakeRect(x, y, w, h);
 }
 
+// Height of a row's text block: one line for short entries, at most two.
+static CGFloat wwTextHeight(NSString *text, CGFloat width) {
+    NSFont *font = [NSFont systemFontOfSize:12];
+    CGFloat line = ceil(font.ascender - font.descender + font.leading) + 1;
+    NSString *oneLine = [[text componentsSeparatedByCharactersInSet:
+        [NSCharacterSet newlineCharacterSet]] componentsJoinedByString:@" "];
+    NSRect r = [oneLine boundingRectWithSize:NSMakeSize(width, CGFLOAT_MAX)
+                                     options:NSStringDrawingUsesLineFragmentOrigin
+                                  attributes:@{NSFontAttributeName: font}];
+    return r.size.height > line * 1.5 ? line * 2 : line;
+}
+
 static void wwShow(NSArray<NSString *> *times, NSArray<NSString *> *texts) {
     NSUInteger n = texts.count;
-    CGFloat h = kHeaderH + kPad / 2 + (n == 0 ? kRowH : n * kRowH);
+    CGFloat rowW = kPanelW - 16;
+    NSMutableArray<NSNumber *> *rowHeights = [NSMutableArray arrayWithCapacity:n];
+    CGFloat rowsH = 0;
+    for (NSUInteger i = 0; i < n; i++) {
+        // 6 top gap + 13 time + 5 gap + text + 6 bottom, plus 4 between rows.
+        CGFloat rh = 24 + wwTextHeight(texts[i], rowW - 2 * kPad - 4) + 4;
+        [rowHeights addObject:@(rh)];
+        rowsH += rh;
+    }
+    CGFloat h = kHeaderH + kPad / 2 + (n == 0 ? kRowH : rowsH);
     NSRect frame = wwPlaceNearCursor(kPanelW, h);
 
     WWHistoryPanel *p = [[WWHistoryPanel alloc]
@@ -248,7 +269,7 @@ static void wwShow(NSArray<NSString *> *times, NSArray<NSString *> *texts) {
     NSTextField *header = wwLabel([NSFont systemFontOfSize:11 weight:NSFontWeightMedium],
                                   [NSColor colorWithWhite:1 alpha:0.5]);
     header.stringValue = @"Последние диктовки — клик копирует, Esc закрывает";
-    header.frame = NSMakeRect(kPad + 4, h - kHeaderH + 8, kPanelW - 2 * kPad, 16);
+    header.frame = NSMakeRect(kPad + 4, h - kHeaderH + 6, kPanelW - 2 * kPad, 16);
     [bg addSubview:header];
 
     if (n == 0) {
@@ -257,10 +278,12 @@ static void wwShow(NSArray<NSString *> *times, NSArray<NSString *> *texts) {
         empty.frame = NSMakeRect(kPad + 4, h - kHeaderH - 34, kPanelW - 2 * kPad, 18);
         [bg addSubview:empty];
     }
+    CGFloat top = h - kHeaderH;
     for (NSUInteger i = 0; i < n; i++) {
-        CGFloat top = h - kHeaderH - (i + 1) * kRowH;
+        CGFloat rh = rowHeights[i].doubleValue;
+        top -= rh;
         WWHistoryRow *row = [[WWHistoryRow alloc]
-            initWithFrame:NSMakeRect(8, top + 3, kPanelW - 16, kRowH - 6)
+            initWithFrame:NSMakeRect(8, top + 2, rowW, rh - 4)
                      time:times[i]
                      text:texts[i]];
         row.panel = p;
