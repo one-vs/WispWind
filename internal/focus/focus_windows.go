@@ -2,6 +2,7 @@ package focus
 
 import (
 	"syscall"
+	"time"
 
 	"github.com/lxn/win"
 )
@@ -42,5 +43,24 @@ func Restore(hwnd Handle) {
 	} else {
 		win.SetForegroundWindow(hwnd)
 		procBringWindowToTop.Call(uintptr(hwnd))
+	}
+}
+
+// RestoreAndWait restores hwnd as foreground and polls until it actually is,
+// or the timeout elapses. A fixed sleep is not enough on slow windows.
+func RestoreAndWait(hwnd Handle, timeout time.Duration) bool {
+	if hwnd == 0 {
+		return false
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		Restore(hwnd)
+		if win.GetForegroundWindow() == hwnd {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(30 * time.Millisecond)
 	}
 }

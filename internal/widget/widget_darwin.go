@@ -85,6 +85,8 @@ static void wwSpawn(WWBlob *b, double now, BOOL initial) {
 
     if (!self.wide) {
         [self drawIdleGlyph];
+    } else if ([self.status isEqualToString:@"done"]) {
+        [self drawDone:ctx];
     } else {
         CGContextSaveGState(ctx);
         [capsule addClip];
@@ -100,6 +102,25 @@ static void wwSpawn(WWBlob *b, double now, BOOL initial) {
     [[NSColor colorWithWhite:1.0 alpha:0.10] set];
     rim.lineWidth = 1.0;
     [rim stroke];
+}
+
+// Short confirmation after the text was pasted: a glowing checkmark.
+- (void)drawDone:(CGContextRef)ctx {
+    NSRect b = [self bounds];
+    CGFloat cx = NSMidX(b), cy = NSMidY(b);
+    CGContextSaveGState(ctx);
+    CGColorRef glow = CGColorCreateGenericRGB(0.35, 0.95, 0.60, 0.7);
+    CGContextSetShadowWithColor(ctx, CGSizeZero, 8, glow);
+    CGContextSetRGBStrokeColor(ctx, 0.47, 0.95, 0.62, 1.0);
+    CGContextSetLineWidth(ctx, 3.0);
+    CGContextSetLineCap(ctx, kCGLineCapRound);
+    CGContextSetLineJoin(ctx, kCGLineJoinRound);
+    CGContextMoveToPoint(ctx, cx - 9, cy);
+    CGContextAddLineToPoint(ctx, cx - 3, cy - 6);
+    CGContextAddLineToPoint(ctx, cx + 9, cy + 7);
+    CGContextStrokePath(ctx);
+    CGColorRelease(glow);
+    CGContextRestoreGState(ctx);
 }
 
 - (void)drawIdleGlyph {
@@ -512,6 +533,10 @@ func Hide() {
 	overlay.mu.Unlock()
 	C.wispwind_hideWindow()
 }
+
+// SetTheme is accepted for API parity with Windows; the macOS widget always
+// uses its Siri-style cyan/magenta/violet palette.
+func SetTheme(name string) {}
 
 func SetStatus(status string) {
 	overlay.mu.Lock()

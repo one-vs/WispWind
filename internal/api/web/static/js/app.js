@@ -58,7 +58,10 @@
       .querySelector('.nav-item[data-page="' + page + '"]')
       .classList.add("active");
     if (page === "usage") loadUsage();
-    if (page === "history") loadHistoryDates();
+    if (page === "history") {
+      loadHistoryDates();
+      loadRecordings();
+    }
     if (page === "logs") loadLogFiles();
     if (page === "help") loadHelp();
   }
@@ -197,6 +200,71 @@
     }
   }
 
+  /* ---------- Recordings (WAV backups) ---------- */
+  async function loadRecordings() {
+    const tbody = document.getElementById("recordingsTableBody");
+    if (!tbody) return;
+    try {
+      const res = await fetch("/api/recordings");
+      const recs = (await res.json()) || [];
+      if (!recs.length) {
+        tbody.innerHTML =
+          '<tr><td colspan="4"><div class="empty-state">No saved recordings.</div></td></tr>';
+        return;
+      }
+      tbody.innerHTML = recs
+        .map(function (r) {
+          const kb = (r.size / 1024).toFixed(0);
+          return (
+            "<tr>" +
+            "<td>" + escapeHTML(r.mod_time) + "</td>" +
+            "<td>" + kb + " KB</td>" +
+            '<td><audio controls preload="none" style="height:30px;max-width:100%" src="/recordings/' +
+            encodeURIComponent(r.name) + '"></audio></td>' +
+            '<td class="text-right"><button type="button" class="btn btn-small" data-rec="' +
+            escapeHTML(r.name) + '">Transcribe</button></td>' +
+            "</tr>"
+          );
+        })
+        .join("");
+      tbody.querySelectorAll("button[data-rec]").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          retranscribe(btn);
+        });
+      });
+    } catch (e) {
+      tbody.innerHTML =
+        '<tr><td colspan="4"><div class="empty-state">Error loading recordings.</div></td></tr>';
+    }
+  }
+
+  async function retranscribe(btn) {
+    const file = btn.getAttribute("data-rec");
+    btn.disabled = true;
+    btn.innerText = "Working...";
+    try {
+      const res = await fetch("/api/recordings/transcribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ file: file }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      btn.innerText = "Done ✓";
+      // The result lands in history — refresh the table above.
+      loadHistoryDates();
+      alert("Transcribed:\n\n" + (data.text || "(empty)"));
+    } catch (e) {
+      btn.innerText = "Failed";
+      alert("Transcription failed: " + e.message);
+    } finally {
+      setTimeout(function () {
+        btn.disabled = false;
+        btn.innerText = "Transcribe";
+      }, 3000);
+    }
+  }
+
   async function loadHistoryTable(date) {
     if (!date) return;
     const tbody = document.getElementById("historyTableBody");
@@ -263,22 +331,27 @@
     try {
       const res = await fetch("/api/logs");
       let files = (await res.json()) || [];
+      files = files.filter((f) => !f.startsWith("."));
       if (!files.length) {
         sel.innerHTML = '<option value="">No files</option>';
         content.innerText = "No log files found.";
         return;
       }
-      files.reverse();
-      sel.innerHTML = files
-        .map(
-          (f) =>
-            '<option value="/logs/' +
-            encodeURIComponent(f) +
-            '">' +
-            escapeHTML(f) +
-            "</option>",
-        )
-        .join("");
+      const daily = files.filter((f) => f !== "crash.log").reverse();
+      const opt = (f, label) =>
+        '<option value="/logs/' +
+        encodeURIComponent(f) +
+        '">' +
+        escapeHTML(label || f) +
+        "</option>";
+      let html = '<optgroup label="App logs">' + daily.map((f) => opt(f)).join("") + "</optgroup>";
+      if (files.includes("crash.log")) {
+        html +=
+          '<optgroup label="Supervisor">' +
+          opt("crash.log", "Crash log") +
+          "</optgroup>";
+      }
+      sel.innerHTML = html;
       viewLogFile(sel.value);
     } catch (e) {
       sel.innerHTML = '<option value="">Error</option>';
@@ -314,6 +387,14 @@
     HOTKEY_MODE: "Hotkey Mode",
     HOTKEY_START: "Start Hotkey",
     HOTKEY_STOP: "Stop Hotkey",
+    HOTKEY_HISTORY: "History Panel Hotkey",
+    WAVE_THEME: "Wave Color Theme",
+    PASTE_MODE: "Paste Mode",
+    RESTORE_CLIPBOARD: "Restore Clipboard After Paste",
+    SMART_SPACING: "Smart Leading Space",
+    MAX_RECORD_SECONDS: "Max Recording (seconds)",
+    SAVE_RECORDINGS: "Save WAV Backups (7 days)",
+    MIC_GAIN: "Mic Gain (auto or 1-10)",
     COST_STT_AUDIO_INPUT_USD_PER_1M: "STT Audio Input ($/1M)",
     COST_STT_AUDIO_USD_PER_MINUTE: "STT Audio ($/minute)",
     COST_STT_TEXT_INPUT_USD_PER_1M: "STT Text Input ($/1M)",
@@ -324,9 +405,11 @@
 
   const SELECT_OPTIONS = {
     STT_PROVIDER: ["openai", "deepgram"],
-    STT_MODE: ["batch", "realtime"],
+    STT_MODE: ["batch"], // realtime is legacy, unsupported
     STT_LANGUAGE: ["auto", "ru", "en"],
     HOTKEY_MODE: ["hold", "toggle"],
+    WAVE_THEME: ["green", "purple", "yellow", "red", "blue"],
+    PASTE_MODE: ["clipboard", "type"],
     STT_MODEL: [
       "gpt-4o-mini-transcribe",
       "gpt-4o-transcribe",
@@ -335,7 +418,12 @@
     ],
   };
 
-  const TOGGLE_KEYS = { DISABLE_LLM: { false: "Enabled", true: "Disabled" } };
+  const TOGGLE_KEYS = {
+    DISABLE_LLM: { false: "Enabled", true: "Disabled" },
+    RESTORE_CLIPBOARD: { true: "Enabled", false: "Disabled" },
+    SMART_SPACING: { true: "Enabled", false: "Disabled" },
+    SAVE_RECORDINGS: { true: "Enabled", false: "Disabled" },
+  };
   const TEXTAREA_KEYS = new Set(["STT_PROMPT", "PROMPT"]);
 
   const TABS = [
@@ -371,7 +459,22 @@
       label: "Hotkeys",
       card: "Hotkeys",
       sub: "Bind global keyboard shortcuts.",
-      keys: ["HOTKEY_MODE", "HOTKEY_START", "HOTKEY_STOP"],
+      keys: ["HOTKEY_MODE", "HOTKEY_START", "HOTKEY_STOP", "HOTKEY_HISTORY"],
+    },
+    {
+      id: "widget",
+      label: "Widget",
+      card: "Widget & Paste",
+      sub: "Overlay appearance and text insertion behavior.",
+      keys: [
+        "WAVE_THEME",
+        "PASTE_MODE",
+        "RESTORE_CLIPBOARD",
+        "SMART_SPACING",
+        "MAX_RECORD_SECONDS",
+        "SAVE_RECORDINGS",
+        "MIC_GAIN",
+      ],
     },
     {
       id: "pricing",

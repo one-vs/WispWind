@@ -83,6 +83,69 @@ func (d *DB) Close() error {
 	return d.db.Close()
 }
 
+// MigrateCostDefaultsV2 fixes the fallout of the original (incorrect) cost
+// defaults. It runs once, guarded by a settings flag:
+//   - drops stored COST_* settings that match the old wrong defaults, so the
+//     corrected in-code defaults take effect (values a user actually changed
+//     are kept as overrides);
+//   - recomputes historical STT costs from the recorded token counts using
+//     the correct OpenAI prices.
+func (d *DB) MigrateCostDefaultsV2(ctx context.Context) (bool, error) {
+	done, err := d.GetSetting(ctx, "COST_DEFAULTS_V2")
+	if err != nil || done == "done" {
+		return false, err
+	}
+
+	// Old defaults that were auto-persisted on every startup.
+	staleValues := map[string][]string{
+		"COST_STT_AUDIO_INPUT_USD_PER_1M": {"1.25", "2.5"},
+		"COST_STT_TEXT_INPUT_USD_PER_1M":  {"0.15", "2.5"},
+		"COST_STT_OUTPUT_USD_PER_1M":      {"5", "10"},
+		"COST_STT_AUDIO_USD_PER_MINUTE":   {"0.003", "0.006"},
+		"COST_LLM_INPUT_USD_PER_1M":       {"0.15"},
+		"COST_LLM_OUTPUT_USD_PER_1M":      {"0.6"},
+	}
+	for key, values := range staleValues {
+		stored, err := d.GetSetting(ctx, key)
+		if err != nil {
+			return false, err
+		}
+		for _, v := range values {
+			if stored == v {
+				if _, err := d.db.ExecContext(ctx, "DELETE FROM settings WHERE key = ?", key); err != nil {
+					return false, err
+				}
+				break
+			}
+		}
+	}
+
+	// Recompute token-based STT costs with the correct prices.
+	recalc := []struct {
+		model            string
+		audio, text, out float64
+	}{
+		{"gpt-4o-mini-transcribe", 3.00, 1.25, 5.00},
+		{"gpt-4o-transcribe", 6.00, 2.50, 10.00},
+		{"gpt-4o-transcribe-diarize", 6.00, 2.50, 10.00},
+	}
+	for _, r := range recalc {
+		_, err := d.db.ExecContext(ctx, `UPDATE usage_logs SET cost_usd =
+			audio_tokens/1000000.0*? + text_tokens/1000000.0*? + output_tokens/1000000.0*?
+			WHERE kind = 'stt' AND model = ?
+			AND (audio_tokens > 0 OR text_tokens > 0 OR output_tokens > 0)`,
+			r.audio, r.text, r.out, r.model)
+		if err != nil {
+			return false, err
+		}
+	}
+
+	if err := d.SaveSetting(ctx, "COST_DEFAULTS_V2", "done"); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (d *DB) SaveSetting(ctx context.Context, key, value string) error {
 	_, err := d.db.ExecContext(ctx, "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", key, value)
 	return err
@@ -185,6 +248,27 @@ func (d *DB) GetAllTimeUsage(ctx context.Context) ([]usage.Record, error) {
 			&t, &r.Kind, &r.Provider, &r.Model, &r.DurationSeconds, &r.AudioBytes, &r.TextChars, &r.ElapsedMS,
 			&r.Usage.InputTokens, &r.Usage.TextTokens, &r.Usage.AudioTokens, &r.Usage.OutputTokens, &r.Usage.TotalTokens, &r.CostUSD,
 		); err != nil {
+			return nil, err
+		}
+		r.Time = t
+		records = append(records, r)
+	}
+	return records, nil
+}
+
+// GetRecentHistory returns the latest dictations, newest first.
+func (d *DB) GetRecentHistory(ctx context.Context, limit int) ([]usage.Record, error) {
+	rows, err := d.db.QueryContext(ctx, `SELECT time, kind, text FROM user_history ORDER BY time DESC, id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var records []usage.Record
+	for rows.Next() {
+		var r usage.Record
+		var t time.Time
+		if err := rows.Scan(&t, &r.Kind, &r.Text); err != nil {
 			return nil, err
 		}
 		r.Time = t

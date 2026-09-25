@@ -25,6 +25,8 @@ void activatePid(int pid) {
 */
 import "C"
 
+import "time"
+
 type Handle int32
 
 func Current() Handle {
@@ -36,4 +38,21 @@ func Restore(h Handle) {
 		return
 	}
 	C.activatePid(C.int(h))
+}
+
+// RestoreAndWait activates the app and waits until it is frontmost, so a
+// paste lands in the right place. Returns false on timeout.
+func RestoreAndWait(h Handle, timeout time.Duration) bool {
+	if h == 0 {
+		return true
+	}
+	Restore(h)
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if Current() == h {
+			return true
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	return Current() == h
 }
