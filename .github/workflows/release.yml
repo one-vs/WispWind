@@ -1,9 +1,14 @@
 name: Release
 
+# Tags (v*) build Windows and macOS and publish a GitHub release.
+# Pull requests and manual runs only build, so both platforms are verified
+# before merging.
 on:
   push:
     tags:
       - "v*"
+  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -12,7 +17,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  build:
+  windows:
     runs-on: windows-latest
 
     steps:
@@ -43,12 +48,71 @@ jobs:
           CGO_ENABLED: "1"
         run: |
           extld="-static -static-libgcc -static-libstdc++ -lwinmm -lole32 -lsetupapi -luuid -lpropsys"
-          go build -ldflags "-H=windowsgui -s -w -extldflags \"$extld\"" -o wispwind.exe cmd/app/main.go
+          go build -ldflags "-H=windowsgui -s -w -extldflags \"$extld\"" -o wispwind.exe ./cmd/app
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: wispwind.exe
+
+  macos:
+    runs-on: macos-14 # Apple Silicon
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install PortAudio
+        run: brew install portaudio pkg-config
+
+      - name: Package
+        env:
+          # No Developer ID certificate in CI: ad-hoc signature.
+          CODESIGN_IDENTITY: "-"
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then version="0.0.0-dev"; fi
+          ./scripts/package-macos.sh "$version"
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/release/WispWind-macos-arm64.zip
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download builds
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          body: |
+            **Windows:** download `wispwind.exe`, put `.env` next to it (see `.env.example`).
+
+            **macOS (Apple Silicon):** download `WispWind-macos-arm64.zip`, unzip and move `WispWind.app` to Applications.
+            The app is not notarized, so on first launch macOS blocks it: right-click → Open, or run
+            `xattr -dr com.apple.quarantine /Applications/WispWind.app`.
+            Then allow WispWind in System Settings → Privacy & Security → Accessibility (and Microphone when asked).
+            Put your `.env` in `~/Library/Application Support/WispWind/`.
           files: |
-            wispwind.exe
+            artifacts/windows/wispwind.exe
+            artifacts/macos/WispWind-macos-arm64.zip
             .env.example

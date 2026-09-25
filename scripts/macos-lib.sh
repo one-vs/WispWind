@@ -4,6 +4,52 @@
 # (see storage.AppDir). Data must never live inside the bundle: it breaks the seal.
 DATA_DIR="$HOME/Library/Application Support/WispWind"
 
+# write_app_bundle <app bundle> <binary> [version]: assemble WispWind.app
+# (executable, icon, Info.plist). Signing is left to the caller.
+write_app_bundle() {
+    local app="$1" bin="$2" version="${3:-1.0}"
+    local contents="$app/Contents"
+    local system_icon="/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/GenericApplicationIcon.icns"
+    mkdir -p "$contents/MacOS" "$contents/Resources"
+    cp "$bin" "$contents/MacOS/WispWind"
+    chmod +x "$contents/MacOS/WispWind"
+    if [ -f "$system_icon" ]; then
+        cp "$system_icon" "$contents/Resources/AppIcon.icns"
+    fi
+    cat > "$contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>WispWind</string>
+  <key>CFBundleDisplayName</key>
+  <string>WispWind</string>
+  <key>CFBundleIdentifier</key>
+  <string>$BUNDLE_ID</string>
+  <key>CFBundleVersion</key>
+  <string>$version</string>
+  <key>CFBundleShortVersionString</key>
+  <string>$version</string>
+  <key>CFBundleExecutable</key>
+  <string>WispWind</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>11.0</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>WispWind needs microphone access to transcribe your voice.</string>
+  <key>NSInputMonitoringUsageDescription</key>
+  <string>WispWind needs input monitoring access to detect the global dictation hotkey.</string>
+  <key>LSUIElement</key>
+  <true/>
+</dict>
+</plist>
+EOF
+}
+
 # migrate_bundle_data <app bundle>: move data left in Contents/MacOS by older versions.
 migrate_bundle_data() {
     local macos="$1/Contents/MacOS"
