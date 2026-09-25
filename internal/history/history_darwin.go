@@ -35,6 +35,7 @@ static const CGFloat kPad = 12;
 @property (nonatomic, strong) NSMutableArray<WWHistoryRow *> *rows;
 @property (nonatomic, assign) NSInteger selected;
 @property (nonatomic, assign) BOOL closing;
+@property (nonatomic, strong) id escMonitor;
 - (void)copyRow:(WWHistoryRow *)row;
 - (void)setHoverRow:(WWHistoryRow *)row;
 - (void)dismiss;
@@ -182,6 +183,10 @@ static NSTextField *wwLabel(NSFont *font, NSColor *color) {
 
 - (void)dismiss {
     if (gPanel != self) return;
+    if (self.escMonitor) {
+        [NSEvent removeMonitor:self.escMonitor];
+        self.escMonitor = nil;
+    }
     self.delegate = nil;
     [self orderOut:nil];
     gPanel = nil;
@@ -262,6 +267,13 @@ static void wwShow(NSArray<NSString *> *times, NSArray<NSString *> *texts) {
         [bg addSubview:row];
         [p.rows addObject:row];
     }
+
+    // Esc typed while another app keeps keyboard focus still closes the panel.
+    __weak WWHistoryPanel *weakPanel = p;
+    p.escMonitor = [NSEvent addGlobalMonitorForEventsMatchingMask:NSEventMaskKeyDown
+                                                          handler:^(NSEvent *e) {
+        if (e.keyCode == 53) [weakPanel dismiss];
+    }];
 
     gPanel = p;
     [p makeKeyAndOrderFront:nil];

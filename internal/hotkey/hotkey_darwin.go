@@ -7,6 +7,7 @@ package hotkey
 #include <Carbon/Carbon.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <ApplicationServices/ApplicationServices.h>
+#include <dispatch/dispatch.h>
 
 extern void wispwindHotkeyCallback(int id);
 
@@ -72,16 +73,37 @@ static OSStatus wispwindHotkeyHandler(EventHandlerCallRef nextHandler, EventRef 
 	return noErr;
 }
 
+static EventHotKeyRef wwHotkeyRefs[8];
+
 static int wispwindRegisterHotkey(int id, UInt32 keyCode, UInt32 modifiers) {
+	static int handlerInstalled;
+	if (!handlerInstalled) {
+		EventTypeSpec eventType;
+		eventType.eventClass = kEventClassKeyboard;
+		eventType.eventKind = kEventHotKeyPressed;
+		InstallApplicationEventHandler(&wispwindHotkeyHandler, 1, &eventType, NULL, NULL);
+		handlerInstalled = 1;
+	}
 	EventHotKeyID hotKeyID;
 	hotKeyID.signature = 'wspw';
 	hotKeyID.id = (UInt32)id;
-	EventTypeSpec eventType;
-	eventType.eventClass = kEventClassKeyboard;
-	eventType.eventKind = kEventHotKeyPressed;
-	InstallApplicationEventHandler(&wispwindHotkeyHandler, 1, &eventType, NULL, NULL);
 	EventHotKeyRef ref = NULL;
-	return RegisterEventHotKey(keyCode, modifiers, hotKeyID, GetEventDispatcherTarget(), 0, &ref);
+	OSStatus st = RegisterEventHotKey(keyCode, modifiers, hotKeyID, GetEventDispatcherTarget(), 0, &ref);
+	if (st == noErr) wwHotkeyRefs[id] = ref;
+	return st;
+}
+
+// Esc is grabbed system-wide only while recording: a permanent Carbon hotkey
+// would swallow Esc in every app (and in the history panel).
+static void wispwindSetCancelHotkey(int on) {
+	dispatch_async(dispatch_get_main_queue(), ^{
+		if (on && !wwHotkeyRefs[3]) {
+			wispwindRegisterHotkey(3, 53, 0);
+		} else if (!on && wwHotkeyRefs[3]) {
+			UnregisterEventHotKey(wwHotkeyRefs[3]);
+			wwHotkeyRefs[3] = NULL;
+		}
+	});
 }
 
 static void wispwindRunHotkeyLoop() {
@@ -158,9 +180,6 @@ func Listen(cfg Config, onStart func(), onStop func(), onCancel func(), onHistor
 		stopStatus := C.wispwindRegisterHotkey(2, C.UInt32(stopCode), C.UInt32(stopMods))
 		log.Printf("macOS hotkey stop registration status: %d", int(stopStatus))
 	}
-	cancelStatus := C.wispwindRegisterHotkey(3, C.UInt32(53), 0)
-	log.Printf("macOS hotkey cancel registration status: %d", int(cancelStatus))
-
 	if onHistory != nil {
 		registerHistoryHotkey(cfg.History)
 	}
@@ -241,6 +260,7 @@ func darwinStartOrStop() {
 		darwinHotkeyState.blockedUntil = time.Now().Add(700 * time.Millisecond)
 		onStop := darwinHotkeyState.onStop
 		darwinHotkeyState.mu.Unlock()
+		C.wispwindSetCancelHotkey(0)
 		go onStop()
 		return
 	}
@@ -252,6 +272,7 @@ func darwinStartOrStop() {
 	darwinHotkeyState.lastAction = time.Now()
 	onStart := darwinHotkeyState.onStart
 	darwinHotkeyState.mu.Unlock()
+	C.wispwindSetCancelHotkey(1)
 	time.AfterFunc(confirmationDelay, func() {
 		go onStart()
 	})
@@ -268,6 +289,7 @@ func darwinStop() {
 	darwinHotkeyState.blockedUntil = time.Now().Add(700 * time.Millisecond)
 	onStop := darwinHotkeyState.onStop
 	darwinHotkeyState.mu.Unlock()
+	C.wispwindSetCancelHotkey(0)
 	go onStop()
 }
 
@@ -282,6 +304,7 @@ func darwinCancel() {
 	darwinHotkeyState.blockedUntil = time.Now().Add(700 * time.Millisecond)
 	onCancel := darwinHotkeyState.onCancel
 	darwinHotkeyState.mu.Unlock()
+	C.wispwindSetCancelHotkey(0)
 	go onCancel()
 }
 

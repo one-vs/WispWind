@@ -1,4 +1,6 @@
 .env
+dist/
+.DS_Store
 scratch/
 /logs/
 /history/
